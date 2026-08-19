@@ -18,8 +18,9 @@ to imply the relational shape is equivalent:
   * only the FIRST coding of each CodeableConcept is stored. Real resources
     carry several (a SNOMED code and the local EHR code, say), and dropping the
     others loses the local code that a site's own analysts use.
-  * extensions are dropped entirely, including US Core race and ethnicity --
-    which means no disparity analysis is possible on this warehouse at all.
+  * MOST extensions are dropped. US Core race and ethnicity are now preserved
+    (see `_us_core_demographics`) because stratified quality reporting is
+    impossible without them; everything else is still lost.
   * Provenance, narrative text, and contained resources are dropped.
   * references are stored as bare ids; conditional and absolute references
     would break.
@@ -41,7 +42,16 @@ CREATE TABLE patient (
     patient_id   TEXT PRIMARY KEY,
     member_id    TEXT,
     birth_date   TEXT,
-    gender       TEXT
+    gender       TEXT,
+    -- US Core race/ethnicity. These arrive as EXTENSIONS, not core elements,
+    -- which is why the first version of this flattener dropped them and why
+    -- stratified reporting was impossible. Stored with the OMB code AND the
+    -- display, and NULL where the source did not record them -- which is
+    -- different from "unknown" and has to stay different.
+    race_code      TEXT,
+    race_display   TEXT,
+    ethnicity_code TEXT,
+    ethnicity_display TEXT
 );
 DROP TABLE IF EXISTS coverage;
 CREATE TABLE coverage (
@@ -176,6 +186,36 @@ def _first_coding(cc):
     return (c.get("system"), c.get("code"), c.get("display") or cc.get("text"))
 
 
+US_CORE_RACE = "http://hl7.org/fhir/us/core/StructureDefinition/us-core-race"
+US_CORE_ETHNICITY = ("http://hl7.org/fhir/us/core/StructureDefinition/"
+                     "us-core-ethnicity")
+
+
+def _us_core_demographics(patient):
+    """Pull race and ethnicity out of the US Core extensions.
+
+    Extensions are nested one level deeper than people expect: the outer
+    extension carries the profile URL, and the OMB category is an inner
+    extension with url "ombCategory". A flattener that reads `valueCoding` off
+    the outer element finds nothing and silently records a NULL, which looks
+    exactly like a patient whose race was never asked.
+    """
+    out = {"race_code": None, "race_display": None,
+           "ethnicity_code": None, "ethnicity_display": None}
+    for ext in patient.get("extension", []) or []:
+        url = ext.get("url")
+        if url not in (US_CORE_RACE, US_CORE_ETHNICITY):
+            continue
+        for inner in ext.get("extension", []) or []:
+            if inner.get("url") != "ombCategory":
+                continue
+            coding = inner.get("valueCoding") or {}
+            prefix = "race" if url == US_CORE_RACE else "ethnicity"
+            out[prefix + "_code"] = coding.get("code")
+            out[prefix + "_display"] = coding.get("display")
+    return out
+
+
 def _ref_id(ref):
     """'Patient/P000123' -> 'P000123'. Absolute and conditional references
     would break here and are not present in this data."""
@@ -205,8 +245,11 @@ def load(ndjson_path, db_path="warehouse.db"):
                 rt = r["resourceType"]
                 if rt == "Patient":
                     ident = (r.get("identifier") or [{}])[0].get("value")
-                    rows["patient"].append((r["id"], ident, r.get("birthDate"),
-                                            r.get("gender")))
+                    demo = _us_core_demographics(r)
+                    rows["patient"].append((
+                        r["id"], ident, r.get("birthDate"), r.get("gender"),
+                        demo["race_code"], demo["race_display"],
+                        demo["ethnicity_code"], demo["ethnicity_display"]))
                 elif rt == "Coverage":
                     p = r.get("period", {})
                     rows["coverage"].append((_ref_id(r.get("beneficiary")),
@@ -244,7 +287,7 @@ def load(ndjson_path, db_path="warehouse.db"):
                         r["id"], _ref_id(r.get("patient")), s, c, d,
                         r.get("occurrenceDateTime"), r.get("status")))
 
-    con.executemany("INSERT INTO patient VALUES (?,?,?,?)", rows["patient"])
+    con.executemany("INSERT INTO patient VALUES (?,?,?,?,?,?,?,?)", rows["patient"])
     con.executemany("INSERT INTO coverage VALUES (?,?,?)", rows["coverage"])
     con.executemany("INSERT INTO condition VALUES (?,?,?,?,?,?,?,?)", rows["condition"])
     con.executemany("INSERT INTO observation VALUES (?,?,?,?,?,?,?,?,?)", rows["observation"])

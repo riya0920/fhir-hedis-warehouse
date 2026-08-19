@@ -25,7 +25,7 @@ re-reads because it returns plausible numbers.
 | dropped | why | what breaks later |
 |---|---|---|
 | **All codings after the first** in a CodeableConcept | one column set per concept | Real resources carry several codings — a SNOMED concept *and* the site's local EHR code. Dropping the rest loses the local code, which is the one a site's own analysts and their existing reports use. This is the most consequential loss here. |
-| **All extensions** | no generic extension store | Includes US Core race, ethnicity, and birth sex. **No disparity analysis is possible on this warehouse at all** — and stratified quality reporting is an explicit CMS direction of travel, so this is a gap that will need fixing rather than a nicety. |
+| **Most extensions** | no generic extension store | US Core **race and ethnicity are now preserved** in dedicated columns, because stratified quality reporting is an explicit CMS direction of travel and was impossible without them. Everything else is still lost, including birth sex, language, gender identity, and any site-specific extension. |
 | **Narrative (`text.div`)** | not queryable | Loses the human-readable rendering, which is what a clinician reviewing an audit finding actually wants to see. |
 | **Contained resources** | no container model | Any resource defined inline rather than referenced disappears entirely. Not present in this data; would be in a real feed. |
 | **Provenance / meta** | no lineage table | Cannot answer "which source system asserted this, and when was it last updated". That question arrives the first time two systems disagree. |
@@ -43,6 +43,14 @@ re-reads because it returns plausible numbers.
   is span arithmetic and a flag cannot express it
 - `valueQuantity` value and unit separately, so a unit conversion is possible
   rather than a string comparison
+- **US Core race and ethnicity**, stored as the OMB code *and* the display, with
+  `NULL` where the source did not record them. `NULL` is not "unknown" and has
+  to stay distinguishable from it: one means nobody asked, the other means the
+  patient declined, and a stratified report that conflates them is describing a
+  population that does not exist. The parser reads the *inner* `ombCategory`
+  extension — a flattener that reads `valueCoding` off the outer element finds
+  nothing and silently records a `NULL` that looks exactly like a patient who
+  was never asked.
 
 ## Value sets are seed data, never inline lists
 

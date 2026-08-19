@@ -86,11 +86,65 @@ def _cc(concept, text=None):
             "text": text or display}
 
 
-def _patient(pid, birth, gender):
-    return {"resourceType": "Patient", "id": pid,
-            "identifier": [{"system": "urn:oid:2.16.840.1.113883.19.5",
-                            "value": f"MBR{pid}"}],
-            "birthDate": birth.isoformat(), "gender": gender}
+# US Core race and ethnicity extensions. These are the fields stratified
+# quality reporting runs on, and they are EXTENSIONS rather than core elements
+# -- which is exactly why a naive flattener drops them and why the first
+# version of this warehouse could not do disparity analysis at all.
+US_CORE_RACE = "http://hl7.org/fhir/us/core/StructureDefinition/us-core-race"
+US_CORE_ETHNICITY = ("http://hl7.org/fhir/us/core/StructureDefinition/"
+                     "us-core-ethnicity")
+OMB_RACE = "urn:oid:2.16.840.1.113883.6.238"
+
+# OMB race categories with their real CDC Race & Ethnicity codes.
+RACE_CATEGORIES = [
+    ("2106-3", "White"),
+    ("2054-5", "Black or African American"),
+    ("2028-9", "Asian"),
+    ("1002-5", "American Indian or Alaska Native"),
+    ("2076-8", "Native Hawaiian or Other Pacific Islander"),
+]
+ETHNICITY_CATEGORIES = [
+    ("2135-2", "Hispanic or Latino"),
+    ("2186-5", "Not Hispanic or Latino"),
+]
+# Real data is missing race/ethnicity far more often than people expect, and
+# the missingness is NOT random -- it varies by site, by registration workflow,
+# and by whether the patient was asked. Modelled explicitly so the stratified
+# report has to confront it rather than quietly dropping those patients.
+MISSING_RACE_RATE = 0.14
+
+# The size of the planted screening gap, in absolute percentage points of
+# completion. Recorded so the stratified report can be checked against it.
+DISPARITY_PENALTY = 0.18
+
+
+def _race_extension(code, display):
+    return {"url": US_CORE_RACE, "extension": [
+        {"url": "ombCategory",
+         "valueCoding": {"system": OMB_RACE, "code": code, "display": display}},
+        {"url": "text", "valueString": display}]}
+
+
+def _ethnicity_extension(code, display):
+    return {"url": US_CORE_ETHNICITY, "extension": [
+        {"url": "ombCategory",
+         "valueCoding": {"system": OMB_RACE, "code": code, "display": display}},
+        {"url": "text", "valueString": display}]}
+
+
+def _patient(pid, birth, gender, race=None, ethnicity=None):
+    res = {"resourceType": "Patient", "id": pid,
+           "identifier": [{"system": "urn:oid:2.16.840.1.113883.19.5",
+                           "value": f"MBR{pid}"}],
+           "birthDate": birth.isoformat(), "gender": gender}
+    ext = []
+    if race:
+        ext.append(_race_extension(*race))
+    if ethnicity:
+        ext.append(_ethnicity_extension(*ethnicity))
+    if ext:
+        res["extension"] = ext
+    return res
 
 
 def _coverage(pid, spans):
@@ -192,6 +246,12 @@ def build_patient(rng, pid, forced=None):
     birth = date(2024 - age, rng.randint(1, 12), rng.randint(1, 28))
     gender = rng.choice(["female", "male"])
 
+    # Race/ethnicity, with realistic missingness.
+    race = None if rng.random() < MISSING_RACE_RATE else rng.choices(
+        RACE_CATEGORIES, weights=[60, 18, 12, 5, 5])[0]
+    ethnicity = None if rng.random() < MISSING_RACE_RATE else rng.choices(
+        ETHNICITY_CATEGORIES, weights=[19, 81])[0]
+
     r = rng.random()
     if r < 0.70:
         spans = [(MY_START, MY_END)]
@@ -204,8 +264,20 @@ def build_patient(rng, pid, forced=None):
     else:                                             # partial year
         spans = [(_rand_date(rng, date(2024, 2, 1), date(2024, 10, 1)), MY_END)]
 
-    res = [_patient(pid, birth, gender), *_coverage(pid, spans)]
+    res = [_patient(pid, birth, gender, race, ethnicity),
+           *_coverage(pid, spans)]
     i = 0
+
+    # PLANTED DISPARITY. Screening completion is lower for two groups, by a
+    # known amount, so the stratified report can be checked against a truth
+    # rather than merely producing plausible-looking numbers. This models a
+    # real and well-documented pattern (access and follow-up differ), NOT a
+    # difference in the patients.
+    screening_penalty = 0.0
+    if race and race[0] in ("2054-5", "1002-5"):
+        screening_penalty = DISPARITY_PENALTY
+    if ethnicity and ethnicity[0] == "2135-2":
+        screening_penalty = max(screening_penalty, DISPARITY_PENALTY * 0.7)
 
     diabetic = age >= 18 and rng.random() < 0.13
     if diabetic:
@@ -216,7 +288,7 @@ def build_patient(rng, pid, forced=None):
         if rng.random() < 0.05:                       # coded in ICD-10 instead
             res.append(_condition(pid, "dm_icd", date(2022, 6, 1), i))
             i += 1
-        if rng.random() < 0.78:                       # numerator: HbA1c in MY
+        if rng.random() < (0.78 - screening_penalty):  # numerator: HbA1c in MY
             code = "hba1c" if rng.random() < 0.85 else "hba1c_alt"
             res.append(_observation(pid, code, _rand_date(rng, MY_START, MY_END),
                                     round(rng.uniform(5.4, 11.2), 1), i))
@@ -232,7 +304,7 @@ def build_patient(rng, pid, forced=None):
             res.append(_condition(pid, "mastectomy_bilateral",
                                   date(2021, 4, 1), i))
             i += 1
-        elif rng.random() < 0.71:
+        elif rng.random() < (0.71 - screening_penalty):
             concept = "mammogram" if rng.random() < 0.8 else "mammogram_sno"
             res.append(_procedure(pid, concept, _rand_date(
                 rng, date(2022, 10, 1), MY_END), i))

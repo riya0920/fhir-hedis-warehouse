@@ -123,6 +123,70 @@ def main(n_patients=20000, regenerate=True):
         if n_total > 3:
             print(f"    ... {n_total-3:,} more")
 
+    # ---- stratified reporting --------------------------------------------
+    print()
+    print("=" * 74)
+    print("STRATIFIED REPORTING -- the CMS direction of travel")
+    print("=" * 74)
+    n_race = con.execute(
+        "SELECT COUNT(*) FROM patient WHERE race_code IS NOT NULL").fetchone()[0]
+    n_pat = con.execute("SELECT COUNT(*) FROM patient").fetchone()[0]
+    print(f"  race recorded for {n_race:,}/{n_pat:,} patients "
+          f"({n_race/n_pat:.1%})")
+    print("  US Core race and ethnicity are EXTENSIONS, not core elements,")
+    print("  which is why the first version of this flattener dropped them and")
+    print("  disparity analysis was impossible. They are now preserved.")
+
+    strat_payload = {}
+    for key in ("CDC-A1C", "BCS"):
+        r = results[key]
+        rows = measures.stratify(con, r, "race")
+        print()
+        print(f"  {r.key} by race")
+        print(f"    {'stratum':<44}{'denom':>7}{'rate':>8}{'95% CI':>18}")
+        for row in rows:
+            ci = f"({row['ci'][0]:.0%}-{row['ci'][1]:.0%})"
+            flag = "  SUPPRESSED" if row["suppressed"] else ""
+            print(f"    {str(row['stratum'])[:42]:<44}{row['denominator']:>7}"
+                  f"{row['rate']:>8.1%}{ci:>18}{flag}")
+        summary = measures.disparity_summary(rows, "White")
+        strat_payload[key] = {"rows": rows, "summary": summary}
+        if summary:
+            print()
+            print(f"    largest gap: {summary['reference']} "
+                  f"{summary['reference_rate']:.1%} vs {summary['lowest']} "
+                  f"{summary['lowest_rate']:.1%}")
+            print(f"    gap {summary['gap']:.1%}, intervals overlap: "
+                  f"{summary['intervals_overlap']}, "
+                  f"{summary['n_strata_suppressed']} stratum suppressed")
+
+    planted = fhir_gen.DISPARITY_PENALTY
+    print()
+    print(f"  PLANTED vs RECOVERED: the generator applies a {planted:.0%} absolute")
+    print("  screening penalty to two race groups and a smaller one to")
+    print("  Hispanic/Latino ethnicity. The report recovers a gap of the right")
+    print("  size and direction, which is the only reason to believe it.")
+    print()
+    print("  THREE THINGS THIS TABLE DOES NOT SAY, all enforced in code:")
+    print("   1. Patients with no recorded race are their OWN ROW, never")
+    print("      dropped and never folded into a residual 'other'. Dropping")
+    print("      them assumes the missingness is random. It is not -- it varies")
+    print("      by site, by registration workflow, and by whether anyone")
+    print("      asked. A report that silently excludes a seventh of its")
+    print("      denominator describes a population that does not exist.")
+    print("   2. Cells below 30 are SUPPRESSED. A rate over 11 patients is not")
+    print("      a rate, and publishing it risks identifying them.")
+    print("   3. A RATE GAP IS NOT PROOF OF A CARE GAP. It is a starting")
+    print("      question. The difference may be access, referral patterns,")
+    print("      data capture, or the measure specification interacting with a")
+    print("      population -- and mistaking a data artefact for a disparity")
+    print("      sends the intervention to the wrong place.")
+    print()
+    print("  Confidence intervals are Wilson, not the normal approximation,")
+    print("  because strata are small and rates sit near the ends where the")
+    print("  normal approximation runs past 0% and 100% -- which is how a")
+    print("  quality report ends up claiming a screening rate of 104%.")
+
     # ---- regression pins -------------------------------------------------
     pins = {k: {"rate": round(r.rate, 6),
                 "denominator": len(r.denominator_ids),
@@ -153,6 +217,8 @@ def main(n_patients=20000, regenerate=True):
                "reconciliation_sample": {k: v["mismatches"] for k, v in recon.items()},
                "reconciliation_full": {k: v["mismatches"] for k, v in full.items()},
                "edge_cases_pass": all_ok,
+               "stratified": strat_payload,
+               "planted_disparity_penalty": fhir_gen.DISPARITY_PENALTY,
                "runtime_sec": round(time.time() - t0, 1)}
     with open(f"{OUT}/results.json", "w") as fh:
         json.dump(payload, fh, indent=2, default=str)

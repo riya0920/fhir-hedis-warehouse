@@ -217,3 +217,142 @@ def test_care_gap_list_contains_only_non_compliant_members(con):
     ids = {g["patient_id"] for g in gaps}
     assert ids == r.denominator_ids - r.numerator_ids
     assert all(g["missing"] for g in gaps)
+
+
+# ---------------------------------------------------------------------------
+# Stratified reporting
+# ---------------------------------------------------------------------------
+def test_us_core_race_survives_flattening(con):
+    """These are EXTENSIONS, not core elements, which is why the first version
+    of the flattener dropped them and disparity analysis was impossible."""
+    n = con.execute("SELECT COUNT(*) FROM patient "
+                    "WHERE race_code IS NOT NULL").fetchone()[0]
+    total = con.execute("SELECT COUNT(*) FROM patient").fetchone()[0]
+    assert n > 0, "race extension was dropped at flattening"
+    assert n < total, "missingness should be modelled, not perfect"
+
+
+def test_race_is_stored_with_its_omb_code_not_just_a_label():
+    codes = {c for c, _d in fhir_gen.RACE_CATEGORIES}
+    assert "2106-3" in codes and "2054-5" in codes
+
+
+def test_extension_parser_reads_the_inner_omb_category():
+    """The OMB category is nested one level deeper than people expect. A
+    flattener that reads valueCoding off the OUTER element finds nothing and
+    silently records a NULL -- which looks exactly like a patient who was
+    never asked."""
+    pat = {"extension": [warehouse_race_ext()]}
+    demo = warehouse._us_core_demographics(pat)
+    assert demo["race_code"] == "2054-5"
+    assert demo["race_display"] == "Black or African American"
+
+
+def warehouse_race_ext():
+    return fhir_gen._race_extension("2054-5", "Black or African American")
+
+
+def test_patient_with_no_extensions_yields_nulls_not_a_crash():
+    demo = warehouse._us_core_demographics({"resourceType": "Patient"})
+    assert demo == {"race_code": None, "race_display": None,
+                    "ethnicity_code": None, "ethnicity_display": None}
+
+
+def test_missing_race_is_its_own_stratum_never_dropped(con):
+    """Dropping unrecorded patients assumes the missingness is random. It is
+    not, and a report that silently excludes them describes a population that
+    does not exist."""
+    r = measures.bcs(con)
+    rows = measures.stratify(con, r, "race")
+    assert any(row["stratum"] == "(not recorded)" for row in rows)
+    assert sum(row["denominator"] for row in rows) == len(r.denominator_ids)
+
+
+def test_stratum_denominators_sum_to_the_measure_denominator(con):
+    for key in ("CDC-A1C", "BCS"):
+        r = measures.MEASURES[key](con)
+        rows = measures.stratify(con, r, "race")
+        assert sum(x["denominator"] for x in rows) == len(r.denominator_ids)
+        assert sum(x["numerator"] for x in rows) == len(r.numerator_ids)
+
+
+def test_small_strata_correctly_refuse_to_report_a_disparity(con):
+    """At the small fixture scale almost every stratum is below threshold and
+    the summary declines to produce a number. Refusing is the right answer;
+    lowering the threshold to get a number would be the wrong one."""
+    r = measures.bcs(con)
+    rows = measures.stratify(con, r, "race")
+    assert sum(1 for x in rows if x["suppressed"]) > 0
+
+
+def test_small_cells_are_flagged_for_suppression(con):
+    r = measures.bcs(con)
+    rows = measures.stratify(con, r, "race")
+    for row in rows:
+        assert row["suppressed"] == (row["denominator"]
+                                     < measures.SMALL_CELL_THRESHOLD)
+
+
+def test_wilson_interval_stays_inside_zero_and_one():
+    """The normal approximation runs past 0% and 100% at small n and extreme
+    rates, which is how a quality report claims a screening rate of 104%."""
+    for n in (5, 12, 30, 200):
+        for k in (0, 1, n - 1, n):
+            lo, hi = measures.wilson_interval(k, n)
+            assert 0.0 <= lo <= hi <= 1.0, (k, n, lo, hi)
+
+
+def test_wilson_interval_contains_the_point_estimate():
+    for k, n in [(3, 10), (50, 100), (1, 40), (99, 100)]:
+        lo, hi = measures.wilson_interval(k, n)
+        assert lo <= k / n <= hi
+
+
+def test_wilson_interval_narrows_as_n_grows():
+    wide = measures.wilson_interval(5, 10)
+    narrow = measures.wilson_interval(500, 1000)
+    assert (narrow[1] - narrow[0]) < (wide[1] - wide[0])
+
+
+@pytest.fixture(scope="module")
+def big(tmp_path_factory):
+    """Stratified reporting needs enough patients per stratum to say anything.
+
+    At the 1,500-patient scale of the main fixture nearly every stratum falls
+    below the small-cell threshold and disparity_summary correctly refuses to
+    report -- which is itself the right behaviour, and is why these tests need
+    their own larger fixture rather than a lower threshold.
+    """
+    d = tmp_path_factory.mktemp("big")
+    path = fhir_gen.generate(9000, seed=31, outdir=str(d))
+    c, _counts = warehouse.load(path, str(d / "big.db"))
+    return _Warehouse(c, path)
+
+
+def test_the_planted_disparity_is_recovered(big):
+    """The only reason to believe a disparity report is that it finds a gap
+    that was put there on purpose, of the right size and direction."""
+    r = measures.bcs(big)
+    rows = measures.stratify(big, r, "race")
+    summary = measures.disparity_summary(rows, "White")
+    assert summary is not None
+    assert summary["gap"] > 0.05, "the planted gap should be visible"
+    assert summary["gap"] < fhir_gen.DISPARITY_PENALTY + 0.12
+
+
+def test_disparity_summary_reports_interval_overlap(big):
+    """A gap whose intervals overlap is not one to launch a programme over,
+    and the report has to say which kind it is."""
+    r = measures.bcs(big)
+    summary = measures.disparity_summary(measures.stratify(big, r, "race"),
+                                         "White")
+    assert isinstance(summary["intervals_overlap"], bool)
+    assert summary["distinguishable"] is (not summary["intervals_overlap"])
+
+
+def test_disparity_summary_ignores_suppressed_and_unrecorded_strata(big):
+    r = measures.bcs(big)
+    rows = measures.stratify(big, r, "race")
+    summary = measures.disparity_summary(rows, "White")
+    assert summary["lowest"] != "(not recorded)"
+    assert summary["reference"] != "(not recorded)"

@@ -87,10 +87,13 @@ def value_set_codes(con, name):
 
 def _patients(con):
     out = {}
-    for pid, member_id, birth, gender in con.execute(
-            "SELECT patient_id, member_id, birth_date, gender FROM patient"):
+    q = ("SELECT patient_id, member_id, birth_date, gender, race_code, "
+         "race_display, ethnicity_code, ethnicity_display FROM patient")
+    for pid, member_id, birth, gender, rc, rd, ec, ed in con.execute(q):
         out[pid] = {"patient_id": pid, "member_id": member_id,
-                    "birth_date": birth, "gender": gender, "spans": []}
+                    "birth_date": birth, "gender": gender, "spans": [],
+                    "race_code": rc, "race": rd,
+                    "ethnicity_code": ec, "ethnicity": ed}
     for pid, a, b in con.execute(
             "SELECT patient_id, span_start, span_end FROM coverage"):
         if pid in out:
@@ -272,3 +275,87 @@ def _missing_for(result):
     return {"CDC-A1C": "no HbA1c result during the measurement year",
             "BCS": "no mammogram in the 27-month lookback",
             "CIS-DTaP": "fewer than 4 DTaP doses recorded"}[result.key]
+
+
+# ---------------------------------------------------------------------------
+# Stratified reporting
+# ---------------------------------------------------------------------------
+SMALL_CELL_THRESHOLD = 30
+
+
+def wilson_interval(successes, n, z=1.96):
+    """Wilson score interval for a proportion.
+
+    Wilson rather than the normal approximation because strata are small and
+    rates sit near the ends, where the normal approximation produces intervals
+    extending below 0 or above 1 -- which is how a quality report ends up
+    claiming a screening rate of 104%.
+    """
+    if n == 0:
+        return (float("nan"), float("nan"))
+    p = successes / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = (z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5)) / denom
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def stratify(con, result, dimension="race"):
+    """Measure rate by a demographic stratum.
+
+    THE CAVEATS ARE PART OF THE OUTPUT, not a footnote:
+
+    * MISSINGNESS IS A CATEGORY. Patients with no recorded race get their own
+      row; they are never dropped and never folded into a residual "other".
+      Dropping them assumes the missingness is random, and it is not -- it
+      varies by site, by registration workflow, and by whether anyone asked.
+      A stratified report that silently excludes a seventh of its denominator
+      is describing a population that does not exist.
+    * SMALL CELLS ARE SUPPRESSED. A rate over 11 patients is not a rate, and
+      publishing it risks identifying them.
+    * A RATE GAP IS NOT PROOF OF A CARE GAP. It is a starting question. The
+      difference may be access, referral patterns, data capture, or the measure
+      specification interacting with a population -- and mistaking a data
+      artefact for a disparity misdirects the intervention.
+    """
+    pats = _patients(con)
+    groups = {}
+    for pid in result.denominator_ids:
+        key = pats[pid].get(dimension) or "(not recorded)"
+        g = groups.setdefault(key, {"denominator": 0, "numerator": 0})
+        g["denominator"] += 1
+        if pid in result.numerator_ids:
+            g["numerator"] += 1
+
+    rows = []
+    for key, g in groups.items():
+        d, n = g["denominator"], g["numerator"]
+        rows.append({"stratum": key, "denominator": d, "numerator": n,
+                     "rate": (n / d) if d else float("nan"),
+                     "suppressed": d < SMALL_CELL_THRESHOLD,
+                     "ci": wilson_interval(n, d)})
+    return sorted(rows, key=lambda r: -r["denominator"])
+
+
+def disparity_summary(rows, reference=None):
+    """Largest gap against a reference stratum, and whether it is resolvable.
+
+    Overlapping confidence intervals are reported rather than a p-value,
+    because the question a quality director actually asks is "is this gap big
+    enough to act on" -- and a gap whose interval spans zero is not one to
+    launch a programme over.
+    """
+    usable = [r for r in rows if not r["suppressed"]
+              and r["stratum"] != "(not recorded)"]
+    if len(usable) < 2:
+        return None
+    ref = (next((r for r in usable if r["stratum"] == reference), None)
+           or max(usable, key=lambda r: r["denominator"]))
+    worst = min(usable, key=lambda r: r["rate"])
+    overlap = not (worst["ci"][1] < ref["ci"][0] or ref["ci"][1] < worst["ci"][0])
+    return {"reference": ref["stratum"], "reference_rate": ref["rate"],
+            "lowest": worst["stratum"], "lowest_rate": worst["rate"],
+            "gap": ref["rate"] - worst["rate"],
+            "intervals_overlap": overlap, "distinguishable": not overlap,
+            "n_strata_reported": len(usable),
+            "n_strata_suppressed": sum(1 for r in rows if r["suppressed"])}

@@ -1,4 +1,4 @@
-# DATA-2 — FHIR to warehouse + HEDIS-style measures (first 20%)
+# DATA-2 — FHIR to warehouse + HEDIS-style measures (~50% build)
 
 **The gap between a count and a measure is the entire job.** This builds the
 measure: initial population → denominator → exclusions → numerator, every stage
@@ -6,14 +6,14 @@ counted, every code coming from a value set rather than a literal.
 
 ```bash
 python run_warehouse.py    # generate 20K bundles -> warehouse -> measures -> reconcile
-python -m pytest tests -q  # 26 tests
+python -m pytest tests -q  # 40 tests
 ```
 
 Offline, ~7 seconds end to end. 20,005 patients, 3 measures, 5 planted edge cases.
 
 ---
 
-## The four things worth reading
+## The five things worth reading
 
 ### 1. The population waterfall
 
@@ -114,6 +114,55 @@ sequence: **population definition first** (are we counting the same people?),
 then value sets, then event capture, then the vendor's spec version. Rates
 differ by *specification* before they differ by data.
 
+### 5. Stratified reporting — the loss FLATTENING.md called most consequential
+
+US Core race and ethnicity arrive as **extensions**, not core elements. The
+first version of the flattener dropped every extension, so disparity analysis
+was impossible on this warehouse — named in `docs/FLATTENING.md` as the most
+consequential loss, and it was, because stratified quality reporting is an
+explicit CMS direction of travel.
+
+They are now preserved (race recorded for 86.1% of patients — missingness is
+modelled, because in real data it is substantial and **not random**).
+
+**BCS by race:**
+
+| stratum | denominator | rate | 95% CI |
+|---|---|---|---|
+| White | 1,194 | 67.3% | 65–70% |
+| Black or African American | 349 | **52.4%** | 47–58% |
+| (not recorded) | 287 | 70.4% | 65–75% |
+| Asian | 217 | 68.7% | 62–74% |
+| American Indian or Alaska Native | 117 | 54.7% | 46–63% |
+
+Largest gap **14.9pp**, intervals do **not** overlap. The generator plants an
+18pp screening penalty for two race groups, so the report recovers a gap of the
+right size and direction — which is the only reason to believe a disparity
+report at all.
+
+Compare with **CDC-A1C**, where the lowest stratum is American Indian or Alaska
+Native at 61.1% against White 74.2% — a 13.1pp gap whose **intervals overlap**
+at n=54. Same pipeline, two different verdicts, and the difference is sample
+size. Reporting the second as a finding would be launching a programme on noise.
+
+**Three things the table refuses to do, enforced in code:**
+
+1. **Missingness is its own row**, never dropped and never folded into a
+   residual "other". Dropping unrecorded patients assumes the missingness is
+   random; it varies by site, by registration workflow, and by whether anyone
+   asked. A report that silently excludes a seventh of its denominator describes
+   a population that does not exist.
+2. **Cells below 30 are suppressed.** A rate over 11 patients is not a rate, and
+   publishing it risks identifying them.
+3. **A rate gap is not proof of a care gap.** It is a starting question. The
+   difference may be access, referral patterns, data capture, or the measure
+   specification interacting with a population — and mistaking a data artefact
+   for a disparity sends the intervention to the wrong place.
+
+Intervals are **Wilson**, not the normal approximation, because strata are small
+and rates sit near the ends where the normal approximation runs past 0% and 100%
+— which is how a quality report ends up claiming a screening rate of 104%.
+
 ### Plus: care-gap drill-through
 
 331 non-compliant CDC-A1C members, each with the missing event named. Measures
@@ -145,10 +194,12 @@ demonstrate measure *logic* rather than being HEDIS rates.
   inactivated codes.
 - **Only 3 of ~90 HEDIS measures**, and each simplified — no hybrid measures, no
   supplemental data, no measure-year versioning.
-- **No US Core extensions**, therefore **no stratified reporting**. Race and
-  ethnicity are dropped at flattening, so disparity analysis — an explicit CMS
-  direction of travel — is impossible on this warehouse. Named in
-  [`docs/FLATTENING.md`](docs/FLATTENING.md) as the most consequential loss.
+- **Only race and ethnicity survive flattening.** Every other extension is
+  still dropped — language, birth sex, gender identity, and any site-specific
+  extension — so stratification is limited to two dimensions.
+- **No risk adjustment on the stratified rates.** A raw rate gap conflates the
+  disparity with differences in case mix between strata, and separating them
+  needs the kind of adjustment this build does not do.
 - **Only the first coding of each CodeableConcept survives**, so local EHR codes
   are lost.
 - **No incremental load.** Full rebuild every run; no CDC, no late-arriving data,
@@ -162,8 +213,8 @@ demonstrate measure *logic* rather than being HEDIS rates.
 |---|---|
 | `src/fhir_gen.py` | FHIR R4 bundle generator + the 5 planted edge cases |
 | `src/warehouse.py` | flattening, schema, value sets as seed data |
-| `src/measures.py` | 3 measures with waterfalls, continuous enrolment, care gaps |
+| `src/measures.py` | 3 measures, waterfalls, continuous enrolment, care gaps, stratification |
 | `src/reference.py` | independent re-implementation for reconciliation |
 | `run_warehouse.py` | ingest → measure → reconcile → verify → pin |
 | `docs/FLATTENING.md` | what was dropped and what breaks later |
-| `tests/test_measures.py` | 26 tests, mostly boundaries |
+| `tests/test_measures.py` | 40 tests, mostly boundaries |
