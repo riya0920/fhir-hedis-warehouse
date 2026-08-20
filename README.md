@@ -182,7 +182,7 @@ sets, and precise rules for supplemental data and hybrid chart review.
 Nothing here is certified, nothing would pass an NCQA audit, and the rates above
 demonstrate measure *logic* rather than being HEDIS rates.
 
-## What is missing (the other 80%)
+## What is still missing
 
 - **No dbt.** Not installed. The structure mirrors a dbt project but there is no
   `ref()` graph, no lineage, no incremental materialisation, no snapshots, no
