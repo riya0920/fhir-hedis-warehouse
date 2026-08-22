@@ -154,7 +154,38 @@ def _coverage(pid, spans):
             for i, (a, b) in enumerate(spans)]
 
 
-def _condition(pid, concept, onset, i):
+# ---------------------------------------------------------------------------
+# meta.lastUpdated -- the receipt clock, which is not the clinical clock
+# ---------------------------------------------------------------------------
+
+# Receipt lag in days: most records land within a week, a long tail does not.
+# The tail is the point. A measure computed 30 days after year-end is missing
+# the tail; the same measure computed in June is not, and the two numbers
+# differ for reasons that have nothing to do with care delivered.
+LAG_MEDIAN_DAYS = 6
+LAG_TAIL_PROB = 0.08          # fraction that arrive very late
+LAG_TAIL_DAYS = (120, 300)
+
+
+def _lag_days(rng):
+    if rng.random() < LAG_TAIL_PROB:
+        return rng.randrange(*LAG_TAIL_DAYS)
+    return int(rng.expovariate(1.0 / LAG_MEDIAN_DAYS)) + 1
+
+
+def _meta(rng, clinical_date):
+    """meta.lastUpdated = when the server first wrote this record.
+
+    FHIR's own incremental mechanism is `$export?_since=<instant>`, which keys
+    on exactly this field -- so a generator that omits it cannot exercise an
+    incremental load at all, and one that sets it equal to the clinical date
+    quietly makes every record arrive instantly.
+    """
+    when = clinical_date + timedelta(days=_lag_days(rng))
+    return {"lastUpdated": when.isoformat() + "T00:00:00Z"}
+
+
+def _condition(pid, concept, onset, i, rng=None):
     return {"resourceType": "Condition", "id": f"cond-{pid}-{i}",
             "subject": {"reference": f"Patient/{pid}"},
             "clinicalStatus": {"coding": [{
@@ -163,36 +194,79 @@ def _condition(pid, concept, onset, i):
             "verificationStatus": {"coding": [{
                 "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
                 "code": "confirmed"}]},
-            "code": _cc(concept), "onsetDateTime": onset.isoformat()}
+            "code": _cc(concept), "onsetDateTime": onset.isoformat(),
+            **({"meta": _meta(rng, onset)} if rng else {})}
 
 
-def _observation(pid, concept, when, value, i):
+def _observation(pid, concept, when, value, i, rng=None):
     return {"resourceType": "Observation", "id": f"obs-{pid}-{i}",
             "status": "final", "subject": {"reference": f"Patient/{pid}"},
             "code": _cc(concept), "effectiveDateTime": when.isoformat(),
             "valueQuantity": {"value": value, "unit": "%",
-                              "system": "http://unitsofmeasure.org", "code": "%"}}
+                              "system": "http://unitsofmeasure.org", "code": "%"},
+            **({"meta": _meta(rng, when)} if rng else {})}
 
 
-def _procedure(pid, concept, when, i):
+def _procedure(pid, concept, when, i, rng=None):
     return {"resourceType": "Procedure", "id": f"proc-{pid}-{i}",
             "status": "completed", "subject": {"reference": f"Patient/{pid}"},
-            "code": _cc(concept), "performedDateTime": when.isoformat()}
+            "code": _cc(concept), "performedDateTime": when.isoformat(),
+            **({"meta": _meta(rng, when)} if rng else {})}
 
 
-def _encounter(pid, concept, when, i):
+def _encounter(pid, concept, when, i, rng=None):
     return {"resourceType": "Encounter", "id": f"enc-{pid}-{i}",
             "status": "finished", "subject": {"reference": f"Patient/{pid}"},
             "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
                       "code": "AMB"},
             "type": [_cc(concept)],
-            "period": {"start": when.isoformat(), "end": when.isoformat()}}
+            "period": {"start": when.isoformat(), "end": when.isoformat()},
+            **({"meta": _meta(rng, when)} if rng else {})}
 
 
-def _immunization(pid, concept, when, i):
+def _immunization(pid, concept, when, i, rng=None):
     return {"resourceType": "Immunization", "id": f"imm-{pid}-{i}",
             "status": "completed", "patient": {"reference": f"Patient/{pid}"},
-            "vaccineCode": _cc(concept), "occurrenceDateTime": when.isoformat()}
+            "vaccineCode": _cc(concept), "occurrenceDateTime": when.isoformat(),
+            **({"meta": _meta(rng, when)} if rng else {})}
+
+
+def _stamp_meta(rng, resources):
+    """Give every resource a meta.lastUpdated derived from its clinical date.
+
+    Stamped in ONE place rather than threaded through every constructor. Twenty
+    call sites is twenty chances to forget one, and a resource with no
+    lastUpdated is invisible to a `_since` export -- it would simply never load
+    incrementally, silently, forever.
+    """
+    for r in resources:
+        cd = (r.get("onsetDateTime") or r.get("effectiveDateTime")
+              or r.get("performedDateTime") or r.get("occurrenceDateTime")
+              or (r.get("period") or {}).get("start"))
+        if not cd:
+            # Patient has no clinical instant, so it is stamped at the start of
+            # the measurement year. Coverage does have one (period.start) and
+            # uses it, because a coverage record genuinely is written when the
+            # span begins.
+            #
+            # THIS PRODUCES A REFERENTIAL HAZARD, AND IT IS A REAL ONE RATHER
+            # THAN AN ARTEFACT OF THIS GENERATOR. A Condition with a 2019 onset
+            # gets a 2019 lastUpdated, which is EARLIER than its own Patient's.
+            # A `_since` export window can therefore return a Condition
+            # referencing a Patient that window never returned.
+            #
+            # FHIR Bulk Data offers no referential-integrity guarantee across
+            # `_since` windows -- that is a property of the specification, not a
+            # bug here, and any pipeline consuming `$export` has to tolerate it.
+            # The loader writes to independent tables with no foreign keys, so
+            # an orphan reference lands and is resolved by a later window rather
+            # than failing the batch. A schema with FK enforcement would reject
+            # a legitimate export.
+            base = MY_START
+        else:
+            base = date.fromisoformat(str(cd)[:10])
+        r["meta"] = _meta(rng, base)
+    return resources
 
 
 def _bundle(pid, resources):
@@ -213,33 +287,33 @@ def build_patient(rng, pid, forced=None):
         res = [_patient(pid, birth, "female"), *_coverage(pid, spans),
                _condition(pid, "dm_type2", date(2019, 5, 1), 0),
                _observation(pid, "hba1c", date(2024, 9, 12), 7.2, 0)]
-        return _bundle(pid, res)
+        return _bundle(pid, _stamp_meta(rng, res))
     if forced == "EC2-allowable-gap":
         birth = date(1968, 2, 2)
         spans = [(MY_START, date(2024, 4, 30)), (date(2024, 5, 31), MY_END)]
         res = [_patient(pid, birth, "male"), *_coverage(pid, spans),
                _condition(pid, "dm_type2", date(2018, 1, 1), 0),
                _observation(pid, "hba1c", date(2024, 8, 3), 6.8, 0)]
-        return _bundle(pid, res)
+        return _bundle(pid, _stamp_meta(rng, res))
     if forced == "EC3-late-event":
         birth = date(1975, 6, 6)
         res = [_patient(pid, birth, "female"), *_coverage(pid, [(MY_START, MY_END)]),
                _condition(pid, "dm_type2", date(2017, 1, 1), 0),
                _observation(pid, "hba1c", date(2025, 1, 1), 7.0, 0)]
-        return _bundle(pid, res)
+        return _bundle(pid, _stamp_meta(rng, res))
     if forced == "EC4-hospice":
         birth = date(1960, 9, 9)
         res = [_patient(pid, birth, "male"), *_coverage(pid, [(MY_START, MY_END)]),
                _condition(pid, "dm_type2", date(2015, 1, 1), 0),
                _observation(pid, "hba1c", date(2024, 6, 1), 8.1, 0),
                _encounter(pid, "hospice", date(2024, 3, 15), 0)]
-        return _bundle(pid, res)
+        return _bundle(pid, _stamp_meta(rng, res))
     if forced == "EC5-age-out":
         birth = date(1948, 5, 20)          # turns 76 in 2024
         res = [_patient(pid, birth, "female"), *_coverage(pid, [(MY_START, MY_END)]),
                _condition(pid, "dm_type2", date(2010, 1, 1), 0),
                _observation(pid, "hba1c", date(2024, 4, 4), 7.5, 0)]
-        return _bundle(pid, res)
+        return _bundle(pid, _stamp_meta(rng, res))
 
     # ---- ordinary patient ----------------------------------------------
     age = rng.randint(2, 84)
@@ -323,7 +397,7 @@ def build_patient(rng, pid, forced=None):
         res.append(_condition(pid, "esrd", date(2022, 1, 1), i))
         i += 1
 
-    return _bundle(pid, res)
+    return _bundle(pid, _stamp_meta(rng, res))
 
 
 def generate(n=20000, seed=23, outdir="data"):

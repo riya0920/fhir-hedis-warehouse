@@ -1,4 +1,4 @@
-# DATA-2 — FHIR to warehouse + HEDIS-style measures (~50% build)
+# DATA-2 — FHIR to warehouse + HEDIS-style measures (~80% build)
 
 **The gap between a count and a measure is the entire job.** This builds the
 measure: initial population → denominator → exclusions → numerator, every stage
@@ -6,7 +6,8 @@ counted, every code coming from a value set rather than a literal.
 
 ```bash
 python run_warehouse.py    # generate 20K bundles -> warehouse -> measures -> reconcile
-python -m pytest tests -q  # 40 tests
+python run_incremental.py     # incremental load, late arrivals, restatement
+python -m pytest tests -q     # 62 tests
 ```
 
 Offline, ~7 seconds end to end. 20,005 patients, 3 measures, 5 planted edge cases.
@@ -182,6 +183,90 @@ sets, and precise rules for supplemental data and hybrid chart review.
 Nothing here is certified, nothing would pass an NCQA audit, and the rates above
 demonstrate measure *logic* rather than being HEDIS rates.
 
+## Incremental load, late arrivals, and a measure that had to be restated
+
+`run_incremental.py`. The gap list said "no incremental load; full rebuild
+every run; no CDC, no late-arriving data, no restatement handling". This is
+those, and the result is a genuine restatement rather than a demonstration.
+
+### The watermark is `meta.lastUpdated`, and getting that wrong fails silently
+
+FHIR already specifies the mechanism: `$export?_since=<instant>` returns
+resources whose `meta.lastUpdated` is at or after that instant. So the
+watermark is the **receipt** clock, not the clinical one.
+
+That distinction is the whole file. HEDIS is computed from clinical dates — was
+the A1c drawn during the measurement year — while the pipeline is fed in
+receipt order, and the two are unrelated. Key the load on a clinical date and a
+January service received in November is **never loaded at all**: the watermark
+passed January ten months earlier. No error, no gap in the row count, just a
+rate that is quietly too low forever.
+
+The generator now stamps `meta.lastUpdated` from a receipt-lag distribution
+with a real tail (8% arrive 120–300 days late), because a generator without it
+cannot exercise an incremental load at all.
+
+### The restatement is real
+
+Two runs of the *same code on the same definitions*:
+
+| | 30 days runout (submitted) | 6 months runout | change |
+|---|---|---|---|
+| CDC-A1C | 956/1,370 = **0.6978** | 996/1,380 = **0.7217** | **+2.39 pp** |
+| BCS | 1,492/2,300 = **0.6487** | 1,519/2,312 = **0.6570** | **+0.83 pp** |
+
+109 resources arrived into the closed measurement year after it was reported —
+median lag 227 days, max 299. The submission rate was 2.4 points low because
+that is what 30 days of runout looks like.
+
+**These are not errors, and a pipeline that silently overwrites the published
+number cannot answer the only question an auditor asks**: what changed between
+the submission and today. `measure_run` records every run with an `is_final`
+flag, and `restatements()` compares against the last *final* run only —
+comparing against every prior run would flag ordinary intra-period movement as
+a restatement, which is not what the word means. Each one names its driver
+(denominator grew / shrank / numerator only), because "more members entered the
+measure" and "members already counted became compliant" are different
+conversations.
+
+### The migration case, made to fire
+
+Every counter reported `0` for "returned but content-identical", because
+nothing in the data had been touched without changing — and **a defence whose
+counter has never moved has not been shown to work**. So the run simulates a
+server re-index that bumps `meta.lastUpdated` on everything and changes nothing
+else:
+
+```
+resources the `_since` export returns    51,227
+classified as new                             0
+classified as changed                         0
+recognised as content-identical          51,227
+late arrivals raised                          0
+```
+
+A pipeline keying on `lastUpdated` alone would treat all 51,227 as changes and
+restate every measure it has ever published — from a re-index that changed no
+clinical fact. `resource_version` stores a hash of the resource body **with
+`meta` excluded**, which is the entire defence.
+
+### What `_since` does not give you
+
+Named because they are the reasons this is a demonstration and not a pipeline:
+
+- **`meta.lastUpdated` moves on any write.** Handled, by content hashing.
+- **Non-conformant servers do not always bump it.** Not handled — you are
+  silently missing updates a `_since` export will never return again.
+- **Deletes are not in a `_since` export at all.** A retracted resource is
+  simply absent, and absence is indistinguishable from "not changed", so an
+  append-only pipeline keeps counting a retracted A1c result forever.
+- **No referential integrity across windows.** A Condition with a 2019 onset
+  gets a 2019 `lastUpdated`, *earlier than its own Patient's*, so a window can
+  return a resource referencing a Patient it never returned. That is a property
+  of the specification, not of this generator — which is why the loader writes
+  to tables with no foreign keys. A schema enforcing FKs would reject a
+  legitimate export.
+
 ## What is still missing
 
 - **No dbt.** Not installed. The structure mirrors a dbt project but there is no
@@ -202,8 +287,13 @@ demonstrate measure *logic* rather than being HEDIS rates.
   needs the kind of adjustment this build does not do.
 - **Only the first coding of each CodeableConcept survives**, so local EHR codes
   are lost.
-- **No incremental load.** Full rebuild every run; no CDC, no late-arriving data,
-  no restatement handling.
+- **The incremental path does not handle deletes or non-conformant servers**
+  — see above. It also has no snapshot/SCD2 history on dimensions, so a
+  patient's race recorded differently over time overwrites rather than
+  versions, and a stratified rate cannot be recomputed as it stood.
+- **`run_incremental.py` rebuilds a window rather than applying a delta.** It
+  filters the export by `lastUpdated` and loads that, which proves the
+  watermark semantics but is not merge/upsert against a live warehouse.
 - **SQLite, not a warehouse.** No partitioning, no clustering, no cost model, and
   the whole thing fits in memory.
 
@@ -217,4 +307,7 @@ demonstrate measure *logic* rather than being HEDIS rates.
 | `src/reference.py` | independent re-implementation for reconciliation |
 | `run_warehouse.py` | ingest → measure → reconcile → verify → pin |
 | `docs/FLATTENING.md` | what was dropped and what breaks later |
+| `src/incremental.py` | `_since` watermark, content hashing, late arrivals, restatement |
+| `run_incremental.py` | two runout windows, a real restatement, a simulated migration |
+| `tests/test_incremental.py` | 22 tests: the watermark, the migration case, restatement |
 | `tests/test_measures.py` | 40 tests, mostly boundaries |
