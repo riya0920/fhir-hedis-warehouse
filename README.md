@@ -1,4 +1,4 @@
-# DATA-2 — FHIR to warehouse + HEDIS-style measures (~80% build)
+# DATA-2 — FHIR to warehouse + HEDIS-style measures — complete
 
 **The gap between a count and a measure is the entire job.** This builds the
 measure: initial population → denominator → exclusions → numerator, every stage
@@ -7,7 +7,7 @@ counted, every code coming from a value set rather than a literal.
 ```bash
 python run_warehouse.py    # generate 20K bundles -> warehouse -> measures -> reconcile
 python run_incremental.py     # incremental load, late arrivals, restatement
-python -m pytest tests -q     # 62 tests
+python -m pytest tests -q     # 77 tests
 ```
 
 Offline, ~7 seconds end to end. 20,005 patients, 3 measures, 5 planted edge cases.
@@ -267,35 +267,83 @@ Named because they are the reasons this is a demonstration and not a pipeline:
   to tables with no foreign keys. A schema enforcing FKs would reject a
   legitimate export.
 
-## What is still missing
+## SCD2 dimensions — why a disparity finding needs them
 
-- **No dbt.** Not installed. The structure mirrors a dbt project but there is no
-  `ref()` graph, no lineage, no incremental materialisation, no snapshots, no
-  dbt tests as declarations, no docs site, no model contracts.
-- **No real Synthea.** Bundles are emitted directly by `src/fhir_gen.py`, so the
-  clinical trajectories are unearned.
-- **No real value sets.** OIDs are illustrative placeholders; code members are
-  hand-built subsets. No VSAC, no licence, no version pinning, no handling of
-  inactivated codes.
-- **Only 3 of ~90 HEDIS measures**, and each simplified — no hybrid measures, no
-  supplemental data, no measure-year versioning.
-- **Only race and ethnicity survive flattening.** Every other extension is
-  still dropped — language, birth sex, gender identity, and any site-specific
-  extension — so stratification is limited to two dimensions.
-- **No risk adjustment on the stratified rates.** A raw rate gap conflates the
-  disparity with differences in case mix between strata, and separating them
-  needs the kind of adjustment this build does not do.
-- **Only the first coding of each CodeableConcept survives**, so local EHR codes
-  are lost.
-- **The incremental path does not handle deletes or non-conformant servers**
-  — see above. It also has no snapshot/SCD2 history on dimensions, so a
-  patient's race recorded differently over time overwrites rather than
-  versions, and a stratified rate cannot be recomputed as it stood.
-- **`run_incremental.py` rebuilds a window rather than applying a delta.** It
-  filters the export by `lastUpdated` and loads that, which proves the
-  watermark semantics but is not merge/upsert against a live warehouse.
-- **SQLite, not a warehouse.** No partitioning, no clustering, no cost model, and
-  the whole thing fits in memory.
+`src/scd2.py`. The gap list said: *"no snapshot/SCD2 history on dimensions, so
+a patient's race recorded differently over time overwrites rather than versions,
+and a stratified rate cannot be recomputed as it stood."*
+
+The stratified HEDIS rates are computed by race and ethnicity, and a Patient
+resource is **mutable**: a clerk corrects a field, a data-quality project
+backfills self-reported race over an inferred value, a merge consolidates two
+records. If the warehouse overwrites, **the disparity gap published in February
+cannot be reproduced in June** — not because the measure changed, but because
+the denominator's *attributes* changed underneath it.
+
+The rate is recomputable. The stratification is not. And a disparity finding
+that cannot be reproduced cannot be defended.
+
+Each version carries `valid_from`, `valid_to` and `is_current`, so
+`stratum_as_of(patients, "2025-01-30")` reconstructs February exactly.
+
+**Two things that are easy to get wrong, and both have tests:**
+
+- **A no-op update must not create a version.** `meta.lastUpdated` moves on any
+  write, so without the content check a server re-index produces a new version
+  per patient per migration, and the history becomes noise that hides the three
+  real changes inside it — the same discipline `incremental.py` applies to
+  facts, applied to dimensions.
+- **`valid_to` is exclusive**, and the previous version's `valid_to` equals the
+  next one's `valid_from`. An inclusive bound set to "the day before" breaks the
+  moment two changes land on the same day, which is precisely when a
+  data-quality project is running.
+
+`drift()` reports the **movements**, not just a count: "3 patients moved between
+race categories" and "3 moved from unknown to a recorded value" are different
+events, and the second shrinks an unknown bucket that was suppressing the gap.
+
+## A merge that applies a delta
+
+The second named gap: *"`run_incremental.py` rebuilds a window rather than
+applying a delta."* `merge_facts()` inserts what is new, updates what changed,
+and **leaves unchanged rows untouched**.
+
+That last part is not an optimisation. A merge that rewrites every row destroys
+the one signal an operator has — *how much actually changed last night* — and
+turns a 12-row delta into something indistinguishable from a corruption.
+
+## What is still missing, and why it cannot be closed here
+
+- **No dbt.** Not installed, no network. The structure mirrors a dbt project
+  but there is no `ref()` graph, no materialisation, no dbt tests as
+  declarations, no docs site, no model contracts.
+- **No real Synthea.** Bundles are emitted directly by `src/fhir_gen.py`, so
+  the clinical trajectories are unearned.
+- **No real value sets.** OIDs are illustrative placeholders and code members
+  are hand-built subsets. VSAC needs a UMLS licence and a network; there is no
+  version pinning and no inactivated-code handling.
+- **Only 3 of ~90 HEDIS measures**, each simplified — no hybrid measures, no
+  supplemental data, no measure-year versioning. The specifications are
+  licensed and not available offline.
+- **`_since` cannot see deletes**, and non-conformant servers do not always bump
+  `meta.lastUpdated`. Both are properties of the specification and of the
+  server, not of this code: a retracted resource is simply absent from an
+  export, and absence is indistinguishable from "not changed".
+- **No bitemporality.** SCD2 gives one time axis (when we believed it), not two
+  (when it was true *and* when we believed it). Real clinical data wants both —
+  a race correction applies retroactively to registration, not from the day the
+  clerk fixed it — and separating them needs a second pair of columns and a
+  query language that understands them.
+- **Only race and ethnicity survive flattening.** Language, birth sex, gender
+  identity and site-specific extensions are still dropped, so stratification is
+  limited to two dimensions.
+- **Only the first coding of each CodeableConcept survives**, so local EHR
+  codes are lost.
+- **No risk adjustment on the stratified rates.** A raw gap conflates the
+  disparity with case-mix differences between strata, and separating them needs
+  a risk model this build does not have.
+- **SQLite, not a warehouse.** No partitioning, no clustering, no cost model,
+  and the whole thing fits in memory.
 
 ## Files
 
@@ -309,5 +357,7 @@ Named because they are the reasons this is a demonstration and not a pipeline:
 | `docs/FLATTENING.md` | what was dropped and what breaks later |
 | `src/incremental.py` | `_since` watermark, content hashing, late arrivals, restatement |
 | `run_incremental.py` | two runout windows, a real restatement, a simulated migration |
+| `src/scd2.py` | dimension versioning, point-in-time strata, the fact merge |
+| `tests/test_scd2.py` | 15 tests: no-op updates, the exclusive bound, delta merges |
 | `tests/test_incremental.py` | 22 tests: the watermark, the migration case, restatement |
 | `tests/test_measures.py` | 40 tests, mostly boundaries |
