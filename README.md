@@ -7,7 +7,8 @@ counted, every code coming from a value set rather than a literal.
 ```bash
 python run_warehouse.py    # generate 20K bundles -> warehouse -> measures -> reconcile
 python run_incremental.py     # incremental load, late arrivals, restatement
-python -m pytest tests -q     # 77 tests
+python -m pytest tests -q     # 82 tests
+python validate_fhir.py       # R4B schema validation -> docs/
 ```
 
 Offline, ~7 seconds end to end. 20,005 patients, 3 measures, 5 planted edge cases.
@@ -312,6 +313,54 @@ That last part is not an optimisation. A merge that rewrites every row destroys
 the one signal an operator has — *how much actually changed last night* — and
 turns a 12-row delta into something indistinguishable from a corruption.
 
+## The corpus is validated against the R4B schema
+
+`src/fhir_gen.py` writes FHIR R4 bundles by hand. Every measure reads them and
+every test asserts things about the resulting rates — so the corpus was checked
+exhaustively for whether it says the **right things**, and never once for
+whether it is **valid FHIR**.
+
+Those are different questions, and the second had a bad answer.
+
+| | valid | invalid |
+|---|---|---|
+| bundles | 65 | 0 |
+| resources | 179 | 0 |
+
+### What it found
+
+**`Coverage.payor` is required in R4** (cardinality `1..*`) and the generator
+omitted it. **All 82 Coverage resources were invalid FHIR.**
+
+The measure logic never noticed, because continuous-enrolment only reads
+`period`. A real FHIR server would have rejected every one of them on ingest.
+
+That is the failure mode worth naming: the corpus was validated against **the
+consumer it happened to have**, not against **the standard it claimed to
+follow**. Seventy-seven passing tests could not see it, because none of them
+were asking.
+
+### The fix is a `display`, and the reason is not laziness
+
+`payor` is now a Reference carrying only `display`. That is valid R4 and it is
+the honest encoding: there is no `Organization` resource in this synthetic
+corpus, so a `reference` pointing at one would be a dangling pointer dressed up
+as provenance.
+
+Adding an `Organization` would also have changed the **resource counts**, which
+the incremental and migration tests measure directly — so the minimal correct
+fix was also the one that keeps those tests meaningful. A test pins that.
+
+### Mind the version
+
+`fhir.resources` defaults to **R5**; this project targets R4, so the audit
+imports the **R4B** models explicitly. Validating R4 resources against R5
+produces failures that are version differences rather than bugs.
+
+Schema validity is a **floor**, not conformance: no US Core profiles, no
+`meta.profile`, no terminology-server validation, no HEDIS value-set
+certification. A bundle can be structurally perfect and clinically nonsense.
+
 ## What is still missing, and why it cannot be closed here
 
 - **No dbt.** Not installed, no network. The structure mirrors a dbt project
@@ -358,6 +407,8 @@ turns a 12-row delta into something indistinguishable from a corruption.
 | `src/incremental.py` | `_since` watermark, content hashing, late arrivals, restatement |
 | `run_incremental.py` | two runout windows, a real restatement, a simulated migration |
 | `src/scd2.py` | dimension versioning, point-in-time strata, the fact merge |
+| `validate_fhir.py` | R4B schema validation; found the missing Coverage.payor |
+| `tests/test_fhir_validation.py` | 5 tests, incl. that the fix adds a field not a resource |
 | `tests/test_scd2.py` | 15 tests: no-op updates, the exclusive bound, delta merges |
 | `tests/test_incremental.py` | 22 tests: the watermark, the migration case, restatement |
 | `tests/test_measures.py` | 40 tests, mostly boundaries |

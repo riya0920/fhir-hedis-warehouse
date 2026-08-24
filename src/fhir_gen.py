@@ -147,9 +147,25 @@ def _patient(pid, birth, gender, race=None, ethnicity=None):
     return res
 
 
+# The plan that pays. Coverage.payor is REQUIRED in R4 (cardinality 1..*), and
+# this generator omitted it until the corpus was validated against the R4B
+# models -- at which point every single Coverage resource turned out to be
+# invalid FHIR. The measure logic never noticed, because continuous-enrolment
+# only reads `period`; a real FHIR server would have rejected the lot on
+# ingest.
+#
+# It is a Reference carrying only `display`, which is valid and is the honest
+# encoding here: there is no Organization resource in this synthetic corpus, so
+# a `reference` pointing at one would be a dangling pointer dressed up as
+# provenance. `display` says "this is who paid, and we cannot resolve them".
+PAYOR = {"display": "Synthetic Health Plan (no Organization resource in this "
+                    "corpus)"}
+
+
 def _coverage(pid, spans):
     return [{"resourceType": "Coverage", "id": f"cov-{pid}-{i}",
              "status": "active", "beneficiary": {"reference": f"Patient/{pid}"},
+             "payor": [dict(PAYOR)],
              "period": {"start": a.isoformat(), "end": b.isoformat()}}
             for i, (a, b) in enumerate(spans)]
 
