@@ -178,7 +178,8 @@ def cdc_hba1c(con):
     numerator = set()
     for p in denominator:
         for when, _s, _c in a1c.get(p, []):
-            if MY_START <= _d(when) <= MY_END:
+            parsed = _d(when)
+            if parsed is not None and MY_START <= parsed <= MY_END:
                 numerator.add(p)
                 break
     m.step("numerator: HbA1c during the measurement year", len(numerator))
@@ -219,8 +220,13 @@ def bcs(con):
 
     lookback_start = date(MY_END.year - 2, 10, 1)   # 27 months back from 31 Dec
     mam = _codes_by_patient(con, "procedure", "performed_date", ["Mammography"])
+    # A missing date must not crash the measure. A resource with no date
+    # cannot be shown to fall in the lookback, so it does not count -- but the
+    # right behaviour is to EXCLUDE it, not to raise, because one undated
+    # record in a million-row feed would otherwise take down the whole run.
     numerator = {p for p in denominator
-                 if any(lookback_start <= _d(w) <= MY_END for w, _s, _c in mam.get(p, []))}
+                 if any(_d(w) is not None and lookback_start <= _d(w) <= MY_END
+                        for w, _s, _c in mam.get(p, []))}
     m.step("numerator: mammogram in the 27-month lookback", len(numerator))
     m.numerator_ids = numerator
     m.detail = {"mammography": mam, "lookback_start": lookback_start.isoformat()}

@@ -43,7 +43,10 @@ A1C_CODES = {("http://loinc.org", "4548-4"), ("http://loinc.org", "17856-6"),
 MAM_CODES = {("http://www.ama-assn.org/go/cpt", "77067"),
              ("http://www.ama-assn.org/go/cpt", "77066"),
              ("http://snomed.info/sct", "24623002")}
-MASTECTOMY = {("http://snomed.info/sct", "428251008")}
+# NOT SNOMED 428251008 -- that code means "History of appendectomy". See
+# src/fhir_gen.py for the full account of the bug and why no replacement
+# SNOMED code is guessed here.
+MASTECTOMY = {("urn:healthcare-hm:example-codes", "EXAMPLE-BILAT-MASTECTOMY")}
 HOSPICE = {("http://snomed.info/sct", "170935008")}
 DTAP = {("http://hl7.org/fhir/sid/cvx", "20"),
         ("http://hl7.org/fhir/sid/cvx", "106")}

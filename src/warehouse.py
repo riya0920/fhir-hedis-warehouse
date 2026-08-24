@@ -158,7 +158,13 @@ VALUE_SETS = {
         ("http://snomed.info/sct", "24623002", "Screening mammography"),
     ]),
     "2.16.840.1.113883.3.464.1003.198.12.1005": ("Bilateral Mastectomy", [
-        ("http://snomed.info/sct", "428251008", "History of bilateral mastectomy"),
+        # See src/fhir_gen.py: SNOMED 428251008 is "History of APPENDECTOMY".
+        # This value set claimed it was bilateral mastectomy; on real Synthea
+        # data 28 appendectomy records matched it and 4 BCS-eligible women were
+        # wrongly excluded from screening. Replaced with an obviously-local
+        # code rather than a second guess; the real binding needs VSAC.
+        ("urn:healthcare-hm:example-codes", "EXAMPLE-BILAT-MASTECTOMY",
+         "History of bilateral mastectomy (LOCAL EXAMPLE CODE)"),
     ]),
     "2.16.840.1.113883.3.464.1003.1003": ("Hospice Encounter", [
         ("http://snomed.info/sct", "170935008", "Hospice care"),
@@ -217,11 +223,55 @@ def _us_core_demographics(patient):
 
 
 def _ref_id(ref):
-    """'Patient/P000123' -> 'P000123'. Absolute and conditional references
-    would break here and are not present in this data."""
+    """Resolve a FHIR reference to a bare resource id.
+
+    Handles the three forms that actually turn up:
+
+        Patient/P000123                          -> P000123   (relative)
+        urn:uuid:ef709d42-d538-6d4e-...          -> ef709d42-...  (UUID)
+        http://host/fhir/Patient/P000123         -> P000123   (absolute)
+
+    THE urn:uuid FORM IS WHY THIS WAS REWRITTEN. The previous version split on
+    "/" and said in its own docstring that absolute references "are not present
+    in this data" -- which was true only because the only data was written by
+    this repository. Synthea, which is the reference synthetic-data generator
+    for exactly this kind of pipeline, uses `urn:uuid:` throughout for
+    transaction bundles.
+
+    Splitting `urn:uuid:abc` on "/" returns the whole string, which then fails
+    to match `Patient.id` of `abc`. Nothing errors. Every clinical resource
+    simply joins to no patient, every denominator collapses to zero, and the
+    measures report 0% instead of failing -- which is the worst possible
+    outcome, because a rate of zero looks like a finding.
+    """
     if not ref:
         return None
-    return str(ref.get("reference", "")).split("/")[-1] or None
+    text = str(ref.get("reference", ""))
+    if not text:
+        return None
+    if text.startswith("urn:uuid:"):
+        return text[len("urn:uuid:"):] or None
+    return text.split("/")[-1] or None
+
+
+def _choice_date(resource, stem):
+    """Resolve a FHIR CHOICE-TYPE date: `<stem>DateTime` or `<stem>Period`.
+
+    FHIR lets a single logical field be expressed either way -- `performed[x]`
+    is `performedDateTime` OR `performedPeriod`, and a server is conformant
+    whichever it picks. Reading only one of them is not a partial
+    implementation, it is a silent one: the column comes back NULL and every
+    date comparison downstream quietly fails.
+
+    Found with real Synthea output, where **100% of procedures** use
+    `performedPeriod`. Against this repository's own bundles, which use
+    `performedDateTime` throughout, the gap was invisible.
+    """
+    direct = resource.get(stem + "DateTime")
+    if direct:
+        return direct
+    period = resource.get(stem + "Period") or {}
+    return period.get("start") or period.get("end")
 
 
 def _status_code(field):
@@ -231,7 +281,14 @@ def _status_code(field):
     return codings[0].get("code") if codings else None
 
 
-def load(ndjson_path, db_path="warehouse.db"):
+def load(ndjson_path, db_path="warehouse.db", value_sets=None):
+    """Load bundles into a fresh warehouse.
+
+    `value_sets` is injectable so the SAME pipeline can be run against a
+    different vocabulary. That is not a convenience: the project's own value
+    sets are illustrative, and pointing the loader at real Synthea output with
+    them still installed is what demonstrates how much a wrong value set costs.
+    """
     con = sqlite3.connect(db_path)
     con.executescript(SCHEMA)
     rows = {k: [] for k in ("patient", "coverage", "condition", "observation",
@@ -258,7 +315,7 @@ def load(ndjson_path, db_path="warehouse.db"):
                     s, c, d = _first_coding(r.get("code"))
                     rows["condition"].append((
                         r["id"], _ref_id(r.get("subject")), s, c, d,
-                        r.get("onsetDateTime"),
+                        _choice_date(r, "onset"),
                         _status_code(r.get("clinicalStatus")),
                         _status_code(r.get("verificationStatus"))))
                 elif rt == "Observation":
@@ -266,13 +323,13 @@ def load(ndjson_path, db_path="warehouse.db"):
                     vq = r.get("valueQuantity") or {}
                     rows["observation"].append((
                         r["id"], _ref_id(r.get("subject")), s, c, d,
-                        r.get("effectiveDateTime"), vq.get("value"),
+                        _choice_date(r, "effective"), vq.get("value"),
                         vq.get("unit"), r.get("status")))
                 elif rt == "Procedure":
                     s, c, d = _first_coding(r.get("code"))
                     rows["procedure"].append((
                         r["id"], _ref_id(r.get("subject")), s, c, d,
-                        r.get("performedDateTime"), r.get("status")))
+                        _choice_date(r, "performed"), r.get("status")))
                 elif rt == "Encounter":
                     types = r.get("type") or [{}]
                     s, c, d = _first_coding(types[0])
@@ -285,7 +342,7 @@ def load(ndjson_path, db_path="warehouse.db"):
                     s, c, d = _first_coding(r.get("vaccineCode"))
                     rows["immunization"].append((
                         r["id"], _ref_id(r.get("patient")), s, c, d,
-                        r.get("occurrenceDateTime"), r.get("status")))
+                        _choice_date(r, "occurrence"), r.get("status")))
 
     con.executemany("INSERT INTO patient VALUES (?,?,?,?,?,?,?,?)", rows["patient"])
     con.executemany("INSERT INTO coverage VALUES (?,?,?)", rows["coverage"])
@@ -296,7 +353,7 @@ def load(ndjson_path, db_path="warehouse.db"):
     con.executemany("INSERT INTO immunization VALUES (?,?,?,?,?,?,?)", rows["immunization"])
 
     seeds = []
-    for oid, (name, members) in VALUE_SETS.items():
+    for oid, (name, members) in (value_sets or VALUE_SETS).items():
         for system, code, display in members:
             seeds.append((oid, name, system, code, display))
     con.executemany("INSERT INTO value_set VALUES (?,?,?,?,?)", seeds)

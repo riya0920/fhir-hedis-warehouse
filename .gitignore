@@ -23,3 +23,7 @@ dbt/logs/
 dbt/hedis.duckdb
 dbt/.user.yml
 check.db
+
+# Synthea population and derived NDJSON. Rebuild: python run_synthea.py --generate
+synthea_out/
+*.duckdb

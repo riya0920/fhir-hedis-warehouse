@@ -7,7 +7,8 @@ counted, every code coming from a value set rather than a literal.
 ```bash
 python run_warehouse.py    # generate 20K bundles -> warehouse -> measures -> reconcile
 python run_incremental.py     # incremental load, late arrivals, restatement
-python -m pytest tests -q     # 92 tests
+python -m pytest tests -q     # 105 tests
+python run_synthea.py         # run the measures on Synthea -> docs/
 python run_dbt.py             # build the dbt graph + 49 dbt tests
 python validate_fhir.py       # R4B schema validation -> docs/
 ```
@@ -431,6 +432,90 @@ fail a build. That last one is not rhetorical: `numerator_is_a_subset_of_denomin
 is now a test, and a rate above 1 is caught by the build rather than by a
 reader.
 
+## The measures now run on data this repository did not write
+
+Every measure here was written against bundles `src/fhir_gen.py` also
+generates. That is a **closed loop** — the generator emits the codes the value
+sets look for, at the grain the loader expects, with the references the joins
+assume. A pipeline can pass every test in that arrangement and still be unable
+to read anybody else's data, and worse, be **wrong in ways the loop hides**.
+
+[Synthea](https://github.com/synthetichealth/synthea) is the reference
+synthetic-data generator for this work, it is free, and it is not written by
+me. `python run_synthea.py` points the whole pipeline at 686 Synthea patients
+(984,230 resources).
+
+It found four things. **None of them raised an exception on the way in.**
+
+**1. `urn:uuid:` references.** Synthea writes them throughout; `_ref_id` split
+on `/` and matched no `Patient.id`. Every clinical resource would have joined
+to nobody and every denominator collapsed to zero — and a measure reporting 0%
+reads as a *finding*, not a failure. The old docstring said absolute references
+"are not present in this data", which was true only because I wrote the data.
+
+**2. No `Coverage` resource at all.** Synthea's FHIR export has none, and
+continuous enrolment gates every denominator. The spans live in
+`payer_transitions.csv`, so 26,367 Coverage resources are **derived** from
+there and tagged `meta.tag = derived` — a resource this pipeline manufactured
+must never be mistaken for one the generator produced.
+
+**3. `performedPeriod`, not `performedDateTime`.** FHIR choice types allow
+either, and a server is conformant either way. **100% of Synthea procedures**
+use the half this loader never read, so every procedure date came back NULL.
+The only reason anyone noticed is that it eventually crashed on a `None`
+comparison.
+
+**4. A wrong SNOMED code that had been wrong all along.**
+
+### The value sets, measured rather than assumed
+
+| value set | rows matched, project codes | rows matched, observed codes |
+|---|---|---|
+| Diabetes | 57 | **195** |
+| HbA1c Laboratory Test | 5,860 | 5,860 |
+| Mammography | **3** | **118** |
+| Hospice Encounter | **0** | **107** |
+| DTaP Vaccine | 353 | 353 |
+
+`Hospice Encounter` — a **required exclusion** — matched **zero** rows. It
+excluded nobody, silently.
+
+| measure | project value sets | observed codes |
+|---|---|---|
+| CDC-A1C | 42 / 46 = **91.30%** | 51 / 67 = **76.12%** |
+| BCS | 1 / 101 = 0.99% | 4 / 87 = 4.60% |
+| CIS-DTaP | 5 / 5 = 100% | 5 / 5 = 100% |
+
+**The CDC-A1C rate moves more than fifteen percentage points on identical
+patients.** Nothing about the care changed — only which codes the value set
+recognised. That is what "the value sets are illustrative" actually costs.
+
+### The bug worth reading twice
+
+The `Bilateral Mastectomy` value set contained **SNOMED `428251008`**, labelled
+*"History of bilateral mastectomy"*.
+
+In SNOMED CT, `428251008` means **History of appendectomy.**
+
+The generator emitted `428251008` and the value set looked for `428251008`, so
+they agreed with each other perfectly and **no test could see it**. Synthea uses
+the code for its real meaning: 28 appendectomy records matched, and **4 of those
+patients were BCS-eligible women wrongly excluded from breast-cancer
+screening** — the denominator went from 97 to 101 once it was corrected. Four
+women taken out of a denominator are four women nobody contacts about a
+mammogram.
+
+**The replacement was not guessed.** Guessing is what caused the bug, and a
+second plausible-looking SNOMED code would be *worse* than an obviously-local
+one because it would look right. The placeholder is now
+`urn:healthcare-hm:example-codes`, which cannot be mistaken for a terminology
+binding. The real code comes from VSAC and needs a UMLS licence — which is
+exactly the gap the list already names.
+
+Java, Synthea and the HL7 validator are documented in
+[`../TOOLCHAIN.md`](../TOOLCHAIN.md). Every Synthea test **skips** cleanly when
+no population has been generated.
+
 ## What is still missing, and why it cannot be closed here
 
 - **The dbt project has no model contracts, no snapshots, and no incremental
@@ -438,8 +523,12 @@ reader.
   above); what is missing is the layer that pins a model's column types against
   change, and `dbt snapshot` for slowly-changing dimensions — `src/scd2.py`
   does that in Python instead and the two are not wired together.
-- **No real Synthea.** Bundles are emitted directly by `src/fhir_gen.py`, so
-  the clinical trajectories are unearned.
+- **Synthea is now used, but only as a second source, not the primary one.**
+  `run_synthea.py` runs the measures over a generated Synthea population (see
+  above). The default corpus is still `src/fhir_gen.py`, because the planted
+  edge cases are what make the measures checkable — Synthea has no
+  `EC6-two-short-gaps` to plant. Synthea's own trajectories are module-driven
+  and still not real epidemiology.
 - **No real value sets.** OIDs are illustrative placeholders and code members
   are hand-built subsets. VSAC needs a UMLS licence and a network; there is no
   version pinning and no inactivated-code handling.
@@ -482,6 +571,9 @@ reader.
 | `validate_fhir.py` | R4B schema validation; found the missing Coverage.payor |
 | `dbt/` | 8 staging views, 3 intermediate, 5 marts, 49 dbt tests |
 | `run_dbt.py` | builds the graph against the SQLite warehouse via duckdb |
+| `src/synthea.py` | Synthea adapter: derived Coverage, observed value sets |
+| `run_synthea.py` | runs the measures on Synthea; found the appendectomy bug |
+| `tests/test_synthea.py` | 13 tests; 9 pin the bugs and need no Synthea |
 | `tests/test_dbt_parity.py` | 10 tests: dbt vs Python, member for member |
 | `tests/test_fhir_validation.py` | 5 tests, incl. that the fix adds a field not a resource |
 | `tests/test_scd2.py` | 15 tests: no-op updates, the exclusive bound, delta merges |

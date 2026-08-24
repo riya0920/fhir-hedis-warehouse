@@ -48,6 +48,9 @@ MY_START, MY_END = date(2024, 1, 1), date(2024, 12, 31)
 LOINC = "http://loinc.org"
 SNOMED = "http://snomed.info/sct"
 CVX = "http://hl7.org/fhir/sid/cvx"
+# For concepts where this project does NOT have a verified real code. A
+# deliberately non-standard system so it can never be mistaken for a binding.
+EXAMPLE_SYSTEM = "urn:healthcare-hm:example-codes"
 ICD10 = "http://hl7.org/fhir/sid/icd-10-cm"
 CPT = "http://www.ama-assn.org/go/cpt"
 
@@ -60,7 +63,27 @@ CODES = {
     "hba1c_alt": (LOINC, "17856-6", "Hemoglobin A1c in Blood by HPLC"),
     "mammogram": (CPT, "77067", "Screening mammography, bilateral"),
     "mammogram_sno": (SNOMED, "24623002", "Screening mammography"),
-    "mastectomy_bilateral": (SNOMED, "428251008", "History of bilateral mastectomy"),
+    # NOT A SNOMED CODE, DELIBERATELY. This entry used to claim SNOMED
+    # 428251008 "History of bilateral mastectomy". That code is real, but in
+    # SNOMED CT it means "HISTORY OF APPENDECTOMY".
+    #
+    # The error was invisible for as long as this repository was the only
+    # source of data: the generator emitted 428251008, the value set looked for
+    # 428251008, and they agreed. Running real Synthea output through the same
+    # pipeline is what exposed it -- Synthea uses 428251008 for its true
+    # meaning: 28 appendectomy records matched the value set, and 4 of those
+    # patients were BCS-eligible women wrongly excluded from breast-cancer
+    # screening. In a real plan those four are never contacted about a
+    # mammogram.
+    #
+    # The correct SNOMED code is NOT guessed here. Guessing is what caused the
+    # bug, and a second plausible-looking wrong code would be worse than an
+    # obviously-local one. A clearly non-standard system makes the placeholder
+    # impossible to mistake for a real terminology binding; the real code comes
+    # from VSAC, which needs a UMLS licence (see the gap list).
+    "mastectomy_bilateral": (EXAMPLE_SYSTEM, "EXAMPLE-BILAT-MASTECTOMY",
+                             "History of bilateral mastectomy (LOCAL EXAMPLE "
+                             "CODE, not SNOMED -- see comment)"),
     "hospice": (SNOMED, "170935008", "Hospice care"),
     "dtap": (CVX, "20", "DTaP"),
     "esrd": (SNOMED, "46177005", "End stage renal disease"),
