@@ -513,7 +513,7 @@ binding. The real code comes from VSAC and needs a UMLS licence — which is
 exactly the gap the list already names.
 
 Java, Synthea and the HL7 validator are documented in
-[`../TOOLCHAIN.md`](../TOOLCHAIN.md). Every Synthea test **skips** cleanly when
+[`TOOLCHAIN.md`](TOOLCHAIN.md). Every Synthea test **skips** cleanly when
 no population has been generated.
 
 ## What is still missing, and why it cannot be closed here

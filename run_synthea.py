@@ -55,7 +55,6 @@ warnings.filterwarnings("ignore")
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "src"))
-sys.path.insert(0, os.path.dirname(ROOT))
 
 import measures as M
 import synthea as S
@@ -91,7 +90,7 @@ def run(rebuild=True):
     if not os.path.isdir(OUTPUT):
         raise SystemExit(
             "no Synthea output at %s -- run `python run_synthea.py "
-            "--generate` (needs Java, see ../TOOLCHAIN.md)" % OUTPUT)
+            "--generate` (needs Java, see TOOLCHAIN.md)" % OUTPUT)
 
     if rebuild or not os.path.exists(NDJSON):
         stats = S.to_ndjson(OUTPUT, NDJSON)
