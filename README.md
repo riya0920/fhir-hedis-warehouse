@@ -1,4 +1,4 @@
-# DATA-2 — FHIR to warehouse + HEDIS-style measures — complete
+# DATA-2 — FHIR to warehouse + HEDIS-style measures — working system, 10 known gaps
 
 **The gap between a count and a measure is the entire job.** This builds the
 measure: initial population → denominator → exclusions → numerator, every stage
