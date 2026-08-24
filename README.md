@@ -363,7 +363,9 @@ certification. A bundle can be structurally perfect and clinically nonsense.
 
 ## What is still missing, and why it cannot be closed here
 
-- **No dbt.** Not installed, no network. The structure mirrors a dbt project
+- **No dbt models.** `dbt-core` **is installed** — an earlier version of this
+  list said it was not, which was wrong. This is unbuilt, not blocked. The
+  structure mirrors a dbt project
   but there is no `ref()` graph, no materialisation, no dbt tests as
   declarations, no docs site, no model contracts.
 - **No real Synthea.** Bundles are emitted directly by `src/fhir_gen.py`, so
