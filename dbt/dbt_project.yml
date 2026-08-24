@@ -1,0 +1,27 @@
+name: hedis
+version: "1.0.0"
+config-version: 2
+profile: hedis
+
+model-paths: ["models"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # The measurement year. Every model reads these rather than hard-coding a
+  # literal, because a measure computed over the wrong window is the single
+  # easiest way to produce a number that looks right and is not.
+  my_start: "2024-01-01"
+  my_end: "2024-12-31"
+  # HEDIS allows ONE gap of up to 45 days. Not two short ones, not one long
+  # one -- both of those are a different population.
+  allowable_gap_days: 45
+
+models:
+  hedis:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: table
+    marts:
+      +materialized: table

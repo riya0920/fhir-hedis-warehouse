@@ -77,6 +77,13 @@ EDGE_CASES = {
                     "why": "hospice is a required exclusion"},
     "EC5-age-out": {"expected_denominator": False, "expected_numerator": False,
                     "why": "turns 76 during the year; age is taken as of 31 Dec"},
+    "EC6-two-short-gaps": {
+        "expected_denominator": False, "expected_numerator": False,
+        "why": ("TWO gaps of 20 days each. Total 40 days is inside the 45-day "
+                "allowance, but the rule permits ONE gap, not 45 days of "
+                "absence -- so this member fails. Planted because the dbt "
+                "build revealed that no member in the corpus had more than one "
+                "gap, leaving the count half of the rule never exercised.")},
 }
 
 
@@ -310,6 +317,19 @@ def build_patient(rng, pid, forced=None):
         res = [_patient(pid, birth, "male"), *_coverage(pid, spans),
                _condition(pid, "dm_type2", date(2018, 1, 1), 0),
                _observation(pid, "hba1c", date(2024, 8, 3), 6.8, 0)]
+        return _bundle(pid, _stamp_meta(rng, res))
+    if forced == "EC6-two-short-gaps":
+        # THE TRAP: 20 + 20 = 40 days missing, under the 45-day allowance, but
+        # in TWO gaps. An implementation that sums total gap-days passes this
+        # member and quietly enlarges every denominator; the rule allows one
+        # gap of up to 45 days, not 45 days of absence.
+        birth = date(1966, 11, 11)
+        spans = [(MY_START, date(2024, 3, 31)),
+                 (date(2024, 4, 21), date(2024, 8, 31)),
+                 (date(2024, 9, 21), MY_END)]
+        res = [_patient(pid, birth, "female"), *_coverage(pid, spans),
+               _condition(pid, "dm_type2", date(2016, 3, 1), 0),
+               _observation(pid, "hba1c", date(2024, 7, 4), 7.4, 0)]
         return _bundle(pid, _stamp_meta(rng, res))
     if forced == "EC3-late-event":
         birth = date(1975, 6, 6)

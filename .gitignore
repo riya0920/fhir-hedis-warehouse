@@ -16,3 +16,10 @@ out/
 !out/
 out/*
 !out/*.png
+
+# dbt build artefacts. Reproduce with: python run_dbt.py
+dbt/target/
+dbt/logs/
+dbt/hedis.duckdb
+dbt/.user.yml
+check.db

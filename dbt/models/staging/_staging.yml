@@ -1,0 +1,44 @@
+version: 2
+
+models:
+  - name: stg_patient
+    description: One row per patient. The grain the whole project is built on.
+    columns:
+      - name: patient_id
+        description: Primary key.
+        tests: [unique, not_null]
+      - name: birth_date
+        description: >
+          Cast to a real date here. Every age calculation downstream depends on
+          it, and a silently-unparseable birth date would produce a member who
+          is never in any age band rather than an error.
+        tests: [not_null]
+
+  - name: stg_coverage
+    description: Enrolment spans, many per patient.
+    columns:
+      - name: patient_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_patient')
+                field: patient_id
+
+  - name: stg_value_set
+    description: >
+      Code membership. These OIDs are ILLUSTRATIVE -- real HEDIS value sets are
+      licensed through VSAC and are not in this repository.
+    columns:
+      - name: value_set_name
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - Diabetes
+                  - HbA1c Laboratory Test
+                  - Mammography
+                  - Bilateral Mastectomy
+                  - Hospice Encounter
+                  - DTaP Vaccine

@@ -1,0 +1,35 @@
+version: 2
+
+models:
+  - name: int_enrolment
+    description: >
+      Continuous-enrolment determination per member. ONE gap of at most 45 days
+      is allowed; two short gaps fail even if their total is smaller.
+    columns:
+      - name: patient_id
+        tests: [unique, not_null]
+      - name: is_continuous
+        tests: [not_null]
+      - name: n_gaps
+        tests:
+          - not_null
+          - at_least_zero
+
+  - name: int_member_year
+    description: One row per member for the measurement year.
+    columns:
+      - name: patient_id
+        tests: [unique, not_null]
+      - name: age_at_year_end
+        description: Age as of 31 December, the HEDIS convention.
+        tests: [not_null]
+
+  - name: int_value_set_events
+    description: >
+      Clinical events restricted to a value set, at one grain so that measures
+      do not each re-derive the join.
+    columns:
+      - name: value_set_name
+        tests: [not_null]
+      - name: event_date
+        tests: [not_null]

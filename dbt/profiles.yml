@@ -1,0 +1,14 @@
+# dbt-duckdb reads the SQLite warehouse in place rather than copying it.
+# DUCKDB_WAREHOUSE is set by ../run_dbt.py so the path works from any cwd.
+hedis:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH') }}"
+      extensions:
+        - sqlite
+      attach:
+        - path: "{{ env_var('SQLITE_WAREHOUSE') }}"
+          type: sqlite
+          alias: wh

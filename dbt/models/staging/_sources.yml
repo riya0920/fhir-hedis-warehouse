@@ -1,0 +1,18 @@
+version: 2
+
+sources:
+  - name: wh
+    description: >
+      The SQLite warehouse built by src/warehouse.py from the FHIR bundles.
+      Attached read-only by duckdb; dbt never writes to it.
+    database: wh
+    schema: main
+    tables:
+      - name: patient
+      - name: coverage
+      - name: condition
+      - name: observation
+      - name: procedure
+      - name: encounter
+      - name: immunization
+      - name: value_set

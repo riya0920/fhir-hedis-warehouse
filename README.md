@@ -7,11 +7,12 @@ counted, every code coming from a value set rather than a literal.
 ```bash
 python run_warehouse.py    # generate 20K bundles -> warehouse -> measures -> reconcile
 python run_incremental.py     # incremental load, late arrivals, restatement
-python -m pytest tests -q     # 82 tests
+python -m pytest tests -q     # 92 tests
+python run_dbt.py             # build the dbt graph + 49 dbt tests
 python validate_fhir.py       # R4B schema validation -> docs/
 ```
 
-Offline, ~7 seconds end to end. 20,005 patients, 3 measures, 5 planted edge cases.
+Offline, ~7 seconds end to end. 20,005 patients, 3 measures, 6 planted edge cases.
 
 ---
 
@@ -361,13 +362,82 @@ Schema validity is a **floor**, not conformance: no US Core profiles, no
 `meta.profile`, no terminology-server validation, no HEDIS value-set
 certification. A bundle can be structurally perfect and clinically nonsense.
 
+## There is a real dbt project, and it is a second implementation
+
+`dbt/` is a full graph — 8 staging views, 3 intermediate tables, 5 marts, and
+**49 dbt tests** — built with `dbt-duckdb`, which reads the SQLite warehouse in
+place through the `sqlite` extension. Nothing is copied and nothing is written
+back.
+
+```bash
+python run_dbt.py          # dbt build: models and their tests, in dependency order
+python run_dbt.py docs     # docs site into dbt/target
+```
+
+`dbt build` rather than `run` then `test`, deliberately: `build` refuses to run
+a model whose upstream **test** failed, so a broken assumption stops the graph
+instead of silently feeding a mart.
+
+### It is not a port — that is the whole point
+
+`src/measures.py` stays, and the dbt models are an **independent
+reimplementation**. The Python walks enrolment spans with a cursor over `date`
+objects and accumulates sets; the SQL does it with a running maximum in a
+window function and boolean columns. Different language, different data model,
+different failure modes.
+
+`tests/test_dbt_parity.py` asserts the two agree **member for member**:
+
+| measure | denominator | numerator | disagreements |
+|---|---|---|---|
+| CDC-A1C | 1,380 | 1,002 | **0** |
+| BCS | 2,312 | 1,525 | **0** |
+| CIS-DTaP | 209 | 120 | **0** |
+
+Member-for-member rather than rate-for-rate, because two implementations can
+produce the **same rate while disagreeing about which members qualify** — one
+wrongly included and one wrongly excluded cancel exactly in the ratio. A
+symmetric difference of member sets cannot cancel.
+
+### Building it found an unexercised rule
+
+The first dbt build reported `n_gaps > 1` for **zero of 20,005 members**. The
+HEDIS rule allows *one* gap of up to 45 days — and the *count* half of that
+rule was never firing. **Every measure would have produced identical numbers if
+the clause had been deleted.**
+
+So `EC6-two-short-gaps` is now planted: two 20-day gaps, **40 days total**,
+inside the 45-day allowance but in **two** gaps, so it must fail. That is
+exactly the member an implementation summing total gap-days lets through,
+quietly enlarging every denominator.
+
+Two dbt tests keep it honest — one asserts such a member is excluded, and the
+other **fails if the corpus ever stops containing one**, because at that point
+the clause is unverified again and nobody would notice.
+
+### Why dbt, when the Python already worked
+
+The Python measures were correct and tested, and they were also one 350-line
+module. The questions a health plan actually asks are about a **graph**:
+
+- which model does the age band live in, and what else depends on it?
+- if the continuous-enrolment rule changes, what breaks?
+- where is the test that says a numerator cannot exceed its denominator?
+
+`ref()` makes that graph explicit and executable, materialisation makes the
+intermediate results inspectable instead of trapped in a Python dict, and
+schema tests turn assertions that were prose in a docstring into things that
+fail a build. That last one is not rhetorical: `numerator_is_a_subset_of_denominator`
+is now a test, and a rate above 1 is caught by the build rather than by a
+reader.
+
 ## What is still missing, and why it cannot be closed here
 
-- **No dbt models.** `dbt-core` **is installed** — an earlier version of this
-  list said it was not, which was wrong. This is unbuilt, not blocked. The
-  structure mirrors a dbt project
-  but there is no `ref()` graph, no materialisation, no dbt tests as
-  declarations, no docs site, no model contracts.
+- **The dbt project has no model contracts, no snapshots, and no incremental
+  materialisations.** The graph, the tests and the docs site are there (see
+  above); what is missing is the layer that pins a model's column types against
+  change, and `dbt snapshot` for slowly-changing dimensions — `src/scd2.py`
+  does that in Python instead and the two are not wired together.
 - **No real Synthea.** Bundles are emitted directly by `src/fhir_gen.py`, so
   the clinical trajectories are unearned.
 - **No real value sets.** OIDs are illustrative placeholders and code members
@@ -410,6 +480,9 @@ certification. A bundle can be structurally perfect and clinically nonsense.
 | `run_incremental.py` | two runout windows, a real restatement, a simulated migration |
 | `src/scd2.py` | dimension versioning, point-in-time strata, the fact merge |
 | `validate_fhir.py` | R4B schema validation; found the missing Coverage.payor |
+| `dbt/` | 8 staging views, 3 intermediate, 5 marts, 49 dbt tests |
+| `run_dbt.py` | builds the graph against the SQLite warehouse via duckdb |
+| `tests/test_dbt_parity.py` | 10 tests: dbt vs Python, member for member |
 | `tests/test_fhir_validation.py` | 5 tests, incl. that the fix adds a field not a resource |
 | `tests/test_scd2.py` | 15 tests: no-op updates, the exclusive bound, delta merges |
 | `tests/test_incremental.py` | 22 tests: the watermark, the migration case, restatement |

@@ -1,0 +1,43 @@
+version: 2
+
+models:
+  - name: fct_cdc_a1c
+    description: One row per member, with every gate as its own column.
+    columns:
+      - name: patient_id
+        tests: [unique, not_null]
+      - name: in_denominator
+        tests: [not_null]
+
+  - name: fct_bcs
+    columns:
+      - name: patient_id
+        tests: [unique, not_null]
+
+  - name: fct_cis_dtap
+    columns:
+      - name: patient_id
+        tests: [unique, not_null]
+
+  - name: mart_measure_rates
+    description: Headline rates with Wilson intervals.
+    columns:
+      - name: measure
+        tests:
+          - unique
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['CDC-A1C', 'BCS', 'CIS-DTaP']
+      - name: rate
+        description: >
+          A rate outside [0,1] means the numerator escaped its denominator --
+          the single most useful invariant in the whole project.
+        tests:
+          - rate_in_unit_interval
+
+  - name: mart_stratified_rates
+    description: Rates by race and ethnicity, with missingness kept as a stratum.
+    columns:
+      - name: stratum
+        tests: [not_null]
