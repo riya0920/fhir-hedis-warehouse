@@ -1,2 +1,5 @@
 fhir.resources
 pytest
+
+# dbt flow (run_dbt.py): builds the graph + runs the dbt tests
+dbt-duckdb>=1.7

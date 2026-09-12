@@ -9,7 +9,7 @@ python run_warehouse.py    # generate 20K bundles -> warehouse -> measures -> re
 python run_incremental.py     # incremental load, late arrivals, restatement
 python -m pytest tests -q     # 105 tests
 python run_synthea.py         # run the measures on Synthea -> docs/
-python run_dbt.py             # build the dbt graph + 49 dbt tests
+python run_dbt.py             # build the dbt graph (16 models) + 33 dbt tests
 python validate_fhir.py       # R4B schema validation -> docs/
 ```
 
@@ -366,7 +366,7 @@ certification. A bundle can be structurally perfect and clinically nonsense.
 ## There is a real dbt project, and it is a second implementation
 
 `dbt/` is a full graph — 8 staging views, 3 intermediate tables, 5 marts, and
-**49 dbt tests** — built with `dbt-duckdb`, which reads the SQLite warehouse in
+**33 dbt tests** (49 dbt nodes total: 16 models + 33 tests, all pass) — built with `dbt-duckdb`, which reads the SQLite warehouse in
 place through the `sqlite` extension. Nothing is copied and nothing is written
 back.
 
@@ -569,7 +569,7 @@ no population has been generated.
 | `run_incremental.py` | two runout windows, a real restatement, a simulated migration |
 | `src/scd2.py` | dimension versioning, point-in-time strata, the fact merge |
 | `validate_fhir.py` | R4B schema validation; found the missing Coverage.payor |
-| `dbt/` | 8 staging views, 3 intermediate, 5 marts, 49 dbt tests |
+| `dbt/` | 8 staging views, 3 intermediate, 5 marts, 33 dbt tests |
 | `run_dbt.py` | builds the graph against the SQLite warehouse via duckdb |
 | `src/synthea.py` | Synthea adapter: derived Coverage, observed value sets |
 | `run_synthea.py` | runs the measures on Synthea; found the appendectomy bug |
