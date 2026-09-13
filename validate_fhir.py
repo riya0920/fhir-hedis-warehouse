@@ -195,7 +195,7 @@ terminology-server validation of the code systems, no HEDIS value-set
 certification. A bundle can be structurally perfect and clinically nonsense.
 """ % (r["bundles_valid"], r["bundles_invalid"],
        r["total_valid"], r["total_invalid"],
-       "\n".join("- `%s` — %d valid, %d invalid"
+       "\n".join("- `%s`: %d valid, %d invalid"
                  % (rt, r["valid"].get(rt, 0), r["invalid"].get(rt, 0))
                  for rt in sorted(set(r["valid"]) | set(r["invalid"])))))
     print("wrote", path)

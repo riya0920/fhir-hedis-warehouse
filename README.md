@@ -1,4 +1,4 @@
-# DATA-2 — FHIR to warehouse + HEDIS-style measures — working system, 10 known gaps
+# DATA-2: FHIR to warehouse + HEDIS-style measures; working system, 10 known gaps
 
 **The gap between a count and a measure is the entire job.** This builds the
 measure: initial population → denominator → exclusions → numerator, every stage
@@ -23,7 +23,7 @@ Offline, ~7 seconds end to end. 20,005 patients, 3 measures, 6 planted edge case
 
 The artefact quality directors and auditors actually live on. A rate can fall
 because the numerator fell **or** because the denominator grew, and those have
-completely different owners — only the waterfall distinguishes them.
+completely different owners; only the waterfall distinguishes them.
 
 ```
 CDC-A1C: HbA1c testing for members with diabetes (18-75)
@@ -43,7 +43,7 @@ CDC-A1C: HbA1c testing for members with diabetes (18-75)
 | CIS-DTaP (4+ doses by age 2) | 186 | 106 | **57.0%** |
 
 Note the 359 members dropped by continuous enrolment. Without that rule the
-denominator includes members the plan had no opportunity to serve — someone who
+denominator includes members the plan had no opportunity to serve: someone who
 enrolled on 20 December cannot reasonably be expected to have been screened.
 **The rate without continuous enrolment is not a worse estimate of the same
 thing; it is an estimate of a different thing.**
@@ -65,12 +65,12 @@ EC1 and EC2 are mirror traps. A numerator-first implementation counts EC1 and
 inflates the rate; an implementation requiring unbroken coverage drops EC2 and
 deflates the denominator. Both look like working code.
 
-EC3 is the one to defend under pressure: *"the test was 2 days late — surely
+EC3 is the one to defend under pressure: *"the test was 2 days late, surely
 that counts?"* The specification decides period boundaries, not intuition, and
 the reason is that the alternative has no stopping point. If 1 day is fine, 3
 are; and a measure whose boundary is negotiable is not comparable across plans,
-which is the only thing a quality measure is for. The counter-argument — that
-the patient plainly received appropriate care — is real, and it is an argument
+which is the only thing a quality measure is for. The counter-argument, that
+the patient plainly received appropriate care, is real, and it is an argument
 for changing the specification, not for implementing it differently.
 
 Boundaries are also unit-tested directly: a 45-day gap is allowed, a 46-day gap
@@ -79,7 +79,7 @@ is not.
 ### 3. Reconciliation against an independent implementation
 
 `src/reference.py` re-implements all three measures reading the FHIR bundles
-**directly** — no warehouse, no SQL, no value-set tables, no shared helper
+**directly**: no warehouse, no SQL, no value-set tables, no shared helper
 functions, and hard-coded code lists rather than seeds.
 
 ```
@@ -91,9 +91,9 @@ Two honest points. This is what "hand-computed for 25 patients" means when done
 at repository scale; it is **not** a claim that I computed anything by hand. And
 it is a weaker check than a human reading a chart: both implementations share my
 reading of the specification, so a *conceptual* misunderstanding reproduces
-identically in both and reconciles perfectly. It catches implementation bugs —
+identically in both and reconciles perfectly. It catches implementation bugs:
 a typo in a seed row, a join that drops rows, a string date comparison that
-works until a year boundary — not specification misreadings.
+works until a year boundary, not specification misreadings.
 
 ### 4. Value sets as data, and rates pinned as regression tests
 
@@ -101,8 +101,8 @@ Measures reference value sets by name; codes live in the `value_set` table.
 `test_measures_reference_value_sets_not_inline_code_lists` fails if a code
 literal ever appears in `measures.py`.
 
-The reason is not tidiness. Value sets change — a new LOINC for the same assay,
-an ICD-10 revision, a corrected publication — and a measure with inline codes
+The reason is not tidiness. Value sets change: a new LOINC for the same assay,
+an ICD-10 revision, a corrected publication, and a measure with inline codes
 keeps using last year's definition until someone notices. Usually the auditor.
 
 Rates are pinned in `out/measure_pins.json`. When a rate moves, the run says so
@@ -112,21 +112,21 @@ loudly:
 > population definition, a value set, or event capture changed, and someone must
 > say which and why before the pin is updated.
 
-That is measure governance in miniature — and it is the answer to *"the quality
+That is measure governance in miniature, and it is the answer to *"the quality
 director says our screening rate is 6 points below last vendor's."* Debug
 sequence: **population definition first** (are we counting the same people?),
 then value sets, then event capture, then the vendor's spec version. Rates
 differ by *specification* before they differ by data.
 
-### 5. Stratified reporting — the loss FLATTENING.md called most consequential
+### 5. Stratified reporting, the loss FLATTENING.md called most consequential
 
 US Core race and ethnicity arrive as **extensions**, not core elements. The
 first version of the flattener dropped every extension, so disparity analysis
-was impossible on this warehouse — named in `docs/FLATTENING.md` as the most
+was impossible on this warehouse, named in `docs/FLATTENING.md` as the most
 consequential loss, and it was, because stratified quality reporting is an
 explicit CMS direction of travel.
 
-They are now preserved (race recorded for 86.1% of patients — missingness is
+They are now preserved (race recorded for 86.1% of patients, missingness is
 modelled, because in real data it is substantial and **not random**).
 
 **BCS by race:**
@@ -141,11 +141,11 @@ modelled, because in real data it is substantial and **not random**).
 
 Largest gap **14.9pp**, intervals do **not** overlap. The generator plants an
 18pp screening penalty for two race groups, so the report recovers a gap of the
-right size and direction — which is the only reason to believe a disparity
+right size and direction, which is the only reason to believe a disparity
 report at all.
 
 Compare with **CDC-A1C**, where the lowest stratum is American Indian or Alaska
-Native at 61.1% against White 74.2% — a 13.1pp gap whose **intervals overlap**
+Native at 61.1% against White 74.2%: a 13.1pp gap whose **intervals overlap**
 at n=54. Same pipeline, two different verdicts, and the difference is sample
 size. Reporting the second as a finding would be launching a programme on noise.
 
@@ -160,17 +160,17 @@ size. Reporting the second as a finding would be launching a programme on noise.
    publishing it risks identifying them.
 3. **A rate gap is not proof of a care gap.** It is a starting question. The
    difference may be access, referral patterns, data capture, or the measure
-   specification interacting with a population — and mistaking a data artefact
+   specification interacting with a population, and mistaking a data artefact
    for a disparity sends the intervention to the wrong place.
 
 Intervals are **Wilson**, not the normal approximation, because strata are small
-and rates sit near the ends where the normal approximation runs past 0% and 100%
-— which is how a quality report ends up claiming a screening rate of 104%.
+and rates sit near the ends where the normal approximation runs past 0% and 100%,
+which is how a quality report ends up claiming a screening rate of 104%.
 
 ### Plus: care-gap drill-through
 
 331 non-compliant CDC-A1C members, each with the missing event named. Measures
-exist to drive outreach, not to produce a number for a slide — the care-gap list
+exist to drive outreach, not to produce a number for a slide; the care-gap list
 is what a quality team actually works.
 
 ---
@@ -198,8 +198,8 @@ FHIR already specifies the mechanism: `$export?_since=<instant>` returns
 resources whose `meta.lastUpdated` is at or after that instant. So the
 watermark is the **receipt** clock, not the clinical one.
 
-That distinction is the whole file. HEDIS is computed from clinical dates — was
-the A1c drawn during the measurement year — while the pipeline is fed in
+That distinction is the whole file. HEDIS is computed from clinical dates: was
+the A1c drawn during the measurement year, while the pipeline is fed in
 receipt order, and the two are unrelated. Key the load on a clinical date and a
 January service received in November is **never loaded at all**: the watermark
 passed January ten months earlier. No error, no gap in the row count, just a
@@ -218,14 +218,14 @@ Two runs of the *same code on the same definitions*:
 | CDC-A1C | 956/1,370 = **0.6978** | 996/1,380 = **0.7217** | **+2.39 pp** |
 | BCS | 1,492/2,300 = **0.6487** | 1,519/2,312 = **0.6570** | **+0.83 pp** |
 
-109 resources arrived into the closed measurement year after it was reported —
+109 resources arrived into the closed measurement year after it was reported,
 median lag 227 days, max 299. The submission rate was 2.4 points low because
 that is what 30 days of runout looks like.
 
 **These are not errors, and a pipeline that silently overwrites the published
 number cannot answer the only question an auditor asks**: what changed between
 the submission and today. `measure_run` records every run with an `is_final`
-flag, and `restatements()` compares against the last *final* run only —
+flag, and `restatements()` compares against the last *final* run only,
 comparing against every prior run would flag ordinary intra-period movement as
 a restatement, which is not what the word means. Each one names its driver
 (denominator grew / shrank / numerator only), because "more members entered the
@@ -235,7 +235,7 @@ conversations.
 ### The migration case, made to fire
 
 Every counter reported `0` for "returned but content-identical", because
-nothing in the data had been touched without changing — and **a defence whose
+nothing in the data had been touched without changing, and **a defence whose
 counter has never moved has not been shown to work**. So the run simulates a
 server re-index that bumps `meta.lastUpdated` on everything and changes nothing
 else:
@@ -249,7 +249,7 @@ late arrivals raised                          0
 ```
 
 A pipeline keying on `lastUpdated` alone would treat all 51,227 as changes and
-restate every measure it has ever published — from a re-index that changed no
+restate every measure it has ever published, from a re-index that changed no
 clinical fact. `resource_version` stores a hash of the resource body **with
 `meta` excluded**, which is the entire defence.
 
@@ -258,7 +258,7 @@ clinical fact. `resource_version` stores a hash of the resource body **with
 Named because they are the reasons this is a demonstration and not a pipeline:
 
 - **`meta.lastUpdated` moves on any write.** Handled, by content hashing.
-- **Non-conformant servers do not always bump it.** Not handled — you are
+- **Non-conformant servers do not always bump it.** Not handled: you are
   silently missing updates a `_since` export will never return again.
 - **Deletes are not in a `_since` export at all.** A retracted resource is
   simply absent, and absence is indistinguishable from "not changed", so an
@@ -266,11 +266,11 @@ Named because they are the reasons this is a demonstration and not a pipeline:
 - **No referential integrity across windows.** A Condition with a 2019 onset
   gets a 2019 `lastUpdated`, *earlier than its own Patient's*, so a window can
   return a resource referencing a Patient it never returned. That is a property
-  of the specification, not of this generator — which is why the loader writes
+  of the specification, not of this generator, which is why the loader writes
   to tables with no foreign keys. A schema enforcing FKs would reject a
   legitimate export.
 
-## SCD2 dimensions — why a disparity finding needs them
+## SCD2 dimensions, why a disparity finding needs them
 
 `src/scd2.py`. The gap list said: *"no snapshot/SCD2 history on dimensions, so
 a patient's race recorded differently over time overwrites rather than versions,
@@ -280,7 +280,7 @@ The stratified HEDIS rates are computed by race and ethnicity, and a Patient
 resource is **mutable**: a clerk corrects a field, a data-quality project
 backfills self-reported race over an inferred value, a merge consolidates two
 records. If the warehouse overwrites, **the disparity gap published in February
-cannot be reproduced in June** — not because the measure changed, but because
+cannot be reproduced in June**, not because the measure changed, but because
 the denominator's *attributes* changed underneath it.
 
 The rate is recomputable. The stratification is not. And a disparity finding
@@ -294,7 +294,7 @@ Each version carries `valid_from`, `valid_to` and `is_current`, so
 - **A no-op update must not create a version.** `meta.lastUpdated` moves on any
   write, so without the content check a server re-index produces a new version
   per patient per migration, and the history becomes noise that hides the three
-  real changes inside it — the same discipline `incremental.py` applies to
+  real changes inside it, the same discipline `incremental.py` applies to
   facts, applied to dimensions.
 - **`valid_to` is exclusive**, and the previous version's `valid_to` equals the
   next one's `valid_from`. An inclusive bound set to "the day before" breaks the
@@ -312,13 +312,13 @@ applying a delta."* `merge_facts()` inserts what is new, updates what changed,
 and **leaves unchanged rows untouched**.
 
 That last part is not an optimisation. A merge that rewrites every row destroys
-the one signal an operator has — *how much actually changed last night* — and
+the one signal an operator has, *how much actually changed last night*, and
 turns a 12-row delta into something indistinguishable from a corruption.
 
 ## The corpus is validated against the R4B schema
 
 `src/fhir_gen.py` writes FHIR R4 bundles by hand. Every measure reads them and
-every test asserts things about the resulting rates — so the corpus was checked
+every test asserts things about the resulting rates, so the corpus was checked
 exhaustively for whether it says the **right things**, and never once for
 whether it is **valid FHIR**.
 
@@ -350,7 +350,7 @@ corpus, so a `reference` pointing at one would be a dangling pointer dressed up
 as provenance.
 
 Adding an `Organization` would also have changed the **resource counts**, which
-the incremental and migration tests measure directly — so the minimal correct
+the incremental and migration tests measure directly, so the minimal correct
 fix was also the one that keeps those tests meaningful. A test pins that.
 
 ### Mind the version
@@ -365,8 +365,8 @@ certification. A bundle can be structurally perfect and clinically nonsense.
 
 ## There is a real dbt project, and it is a second implementation
 
-`dbt/` is a full graph — 8 staging views, 3 intermediate tables, 5 marts, and
-**33 dbt tests** (49 dbt nodes total: 16 models + 33 tests, all pass) — built with `dbt-duckdb`, which reads the SQLite warehouse in
+`dbt/` is a full graph: 8 staging views, 3 intermediate tables, 5 marts, and
+**33 dbt tests** (49 dbt nodes total: 16 models + 33 tests, all pass), built with `dbt-duckdb`, which reads the SQLite warehouse in
 place through the `sqlite` extension. Nothing is copied and nothing is written
 back.
 
@@ -379,7 +379,7 @@ python run_dbt.py docs     # docs site into dbt/target
 a model whose upstream **test** failed, so a broken assumption stops the graph
 instead of silently feeding a mart.
 
-### It is not a port — that is the whole point
+### It is not a port; that is the whole point
 
 `src/measures.py` stays, and the dbt models are an **independent
 reimplementation**. The Python walks enrolment spans with a cursor over `date`
@@ -396,14 +396,14 @@ different failure modes.
 | CIS-DTaP | 209 | 120 | **0** |
 
 Member-for-member rather than rate-for-rate, because two implementations can
-produce the **same rate while disagreeing about which members qualify** — one
+produce the **same rate while disagreeing about which members qualify**: one
 wrongly included and one wrongly excluded cancel exactly in the ratio. A
 symmetric difference of member sets cannot cancel.
 
 ### Building it found an unexercised rule
 
 The first dbt build reported `n_gaps > 1` for **zero of 20,005 members**. The
-HEDIS rule allows *one* gap of up to 45 days — and the *count* half of that
+HEDIS rule allows *one* gap of up to 45 days, and the *count* half of that
 rule was never firing. **Every measure would have produced identical numbers if
 the clause had been deleted.**
 
@@ -412,7 +412,7 @@ inside the 45-day allowance but in **two** gaps, so it must fail. That is
 exactly the member an implementation summing total gap-days lets through,
 quietly enlarging every denominator.
 
-Two dbt tests keep it honest — one asserts such a member is excluded, and the
+Two dbt tests keep it honest: one asserts such a member is excluded, and the
 other **fails if the corpus ever stops containing one**, because at that point
 the clause is unverified again and nobody would notice.
 
@@ -435,7 +435,7 @@ reader.
 ## The measures now run on data this repository did not write
 
 Every measure here was written against bundles `src/fhir_gen.py` also
-generates. That is a **closed loop** — the generator emits the codes the value
+generates. That is a **closed loop**: the generator emits the codes the value
 sets look for, at the grain the loader expects, with the references the joins
 assume. A pipeline can pass every test in that arrangement and still be unable
 to read anybody else's data, and worse, be **wrong in ways the loop hides**.
@@ -449,14 +449,14 @@ It found four things. **None of them raised an exception on the way in.**
 
 **1. `urn:uuid:` references.** Synthea writes them throughout; `_ref_id` split
 on `/` and matched no `Patient.id`. Every clinical resource would have joined
-to nobody and every denominator collapsed to zero — and a measure reporting 0%
+to nobody and every denominator collapsed to zero, and a measure reporting 0%
 reads as a *finding*, not a failure. The old docstring said absolute references
 "are not present in this data", which was true only because I wrote the data.
 
 **2. No `Coverage` resource at all.** Synthea's FHIR export has none, and
 continuous enrolment gates every denominator. The spans live in
 `payer_transitions.csv`, so 26,367 Coverage resources are **derived** from
-there and tagged `meta.tag = derived` — a resource this pipeline manufactured
+there and tagged `meta.tag = derived`: a resource this pipeline manufactured
 must never be mistaken for one the generator produced.
 
 **3. `performedPeriod`, not `performedDateTime`.** FHIR choice types allow
@@ -477,7 +477,7 @@ comparison.
 | Hospice Encounter | **0** | **107** |
 | DTaP Vaccine | 353 | 353 |
 
-`Hospice Encounter` — a **required exclusion** — matched **zero** rows. It
+`Hospice Encounter`, a **required exclusion**, matched **zero** rows. It
 excluded nobody, silently.
 
 | measure | project value sets | observed codes |
@@ -487,7 +487,7 @@ excluded nobody, silently.
 | CIS-DTaP | 5 / 5 = 100% | 5 / 5 = 100% |
 
 **The CDC-A1C rate moves more than fifteen percentage points on identical
-patients.** Nothing about the care changed — only which codes the value set
+patients.** Nothing about the care changed, only which codes the value set
 recognised. That is what "the value sets are illustrative" actually costs.
 
 ### The bug worth reading twice
@@ -501,7 +501,7 @@ The generator emitted `428251008` and the value set looked for `428251008`, so
 they agreed with each other perfectly and **no test could see it**. Synthea uses
 the code for its real meaning: 28 appendectomy records matched, and **4 of those
 patients were BCS-eligible women wrongly excluded from breast-cancer
-screening** — the denominator went from 97 to 101 once it was corrected. Four
+screening**: the denominator went from 97 to 101 once it was corrected. Four
 women taken out of a denominator are four women nobody contacts about a
 mammogram.
 
@@ -509,7 +509,7 @@ mammogram.
 second plausible-looking SNOMED code would be *worse* than an obviously-local
 one because it would look right. The placeholder is now
 `urn:healthcare-hm:example-codes`, which cannot be mistaken for a terminology
-binding. The real code comes from VSAC and needs a UMLS licence — which is
+binding. The real code comes from VSAC and needs a UMLS licence, which is
 exactly the gap the list already names.
 
 Java, Synthea and the HL7 validator are documented in
@@ -521,18 +521,18 @@ no population has been generated.
 - **The dbt project has no model contracts, no snapshots, and no incremental
   materialisations.** The graph, the tests and the docs site are there (see
   above); what is missing is the layer that pins a model's column types against
-  change, and `dbt snapshot` for slowly-changing dimensions — `src/scd2.py`
+  change, and `dbt snapshot` for slowly-changing dimensions, `src/scd2.py`
   does that in Python instead and the two are not wired together.
 - **Synthea is now used, but only as a second source, not the primary one.**
   `run_synthea.py` runs the measures over a generated Synthea population (see
   above). The default corpus is still `src/fhir_gen.py`, because the planted
-  edge cases are what make the measures checkable — Synthea has no
+  edge cases are what make the measures checkable; Synthea has no
   `EC6-two-short-gaps` to plant. Synthea's own trajectories are module-driven
   and still not real epidemiology.
 - **No real value sets.** OIDs are illustrative placeholders and code members
   are hand-built subsets. VSAC needs a UMLS licence and a network; there is no
   version pinning and no inactivated-code handling.
-- **Only 3 of ~90 HEDIS measures**, each simplified — no hybrid measures, no
+- **Only 3 of ~90 HEDIS measures**, each simplified: no hybrid measures, no
   supplemental data, no measure-year versioning. The specifications are
   licensed and not available offline.
 - **`_since` cannot see deletes**, and non-conformant servers do not always bump
@@ -540,9 +540,9 @@ no population has been generated.
   server, not of this code: a retracted resource is simply absent from an
   export, and absence is indistinguishable from "not changed".
 - **No bitemporality.** SCD2 gives one time axis (when we believed it), not two
-  (when it was true *and* when we believed it). Real clinical data wants both —
+  (when it was true *and* when we believed it). Real clinical data wants both:
   a race correction applies retroactively to registration, not from the day the
-  clerk fixed it — and separating them needs a second pair of columns and a
+  clerk fixed it, and separating them needs a second pair of columns and a
   query language that understands them.
 - **Only race and ethnicity survive flattening.** Language, birth sex, gender
   identity and site-specific extensions are still dropped, so stratification is

@@ -14,12 +14,12 @@ Those are different questions, and the second had a bad answer.
 | bundles | 65 | 0 |
 | resources | **179** | **0** |
 
-- `Condition` — 14 valid, 0 invalid
-- `Coverage` — 82 valid, 0 invalid
-- `Encounter` — 1 valid, 0 invalid
-- `Observation` — 10 valid, 0 invalid
-- `Patient` — 65 valid, 0 invalid
-- `Procedure` — 7 valid, 0 invalid
+- `Condition`: 14 valid, 0 invalid
+- `Coverage`: 82 valid, 0 invalid
+- `Encounter`: 1 valid, 0 invalid
+- `Observation`: 10 valid, 0 invalid
+- `Patient`: 65 valid, 0 invalid
+- `Procedure`: 7 valid, 0 invalid
 
 ## What it found
 
